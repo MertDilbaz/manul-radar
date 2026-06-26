@@ -3,7 +3,7 @@
 This is the *real* monitoring runner, as opposed to ``main.py`` which
 is the deterministic smoke target. It wires the full V1 pipeline:
 
-    KafeinHrPeakSource -> JobScorer -> JobMonitorService -> JobRepository
+    <config-driven sources> -> JobScorer -> JobMonitorService -> JobRepository
                                                     |
                                                     +-> TelegramNotifier (optional)
 
@@ -16,6 +16,11 @@ workflow, use::
 
     python run_monitor.py --test-telegram
 
+To exercise the full persist + Telegram path with deterministic
+fixture data instead of the live Kafein (or any other) source, use::
+
+    python run_monitor.py --use-dummy-source
+
 Telegram delivery is opt-in. The bot token and chat id are read from
 the environment under names declared in ``config.yaml`` under
 ``telegram.token_env`` / ``telegram.chat_id_env`` — the config holds
@@ -24,6 +29,12 @@ warning, skip notification, and let the monitoring run complete
 normally (the repository is still updated, scores still computed).
 This makes the script safe to invoke from CI smoke checks where no
 real Telegram token is wired in.
+
+Sources are read from ``config.sources``. The current contract
+recognises one parser kind — ``hrpeak`` — and instantiates one
+``HrPeakSource`` per enabled entry. New parsers (successfactors,
+workable, greenhouse, ...) will plug into the same dispatch in
+``_build_sources_from_config``.
 
 The SQLite database path can be overridden with the ``JOB_DB_PATH``
 environment variable (default: ``data/jobs.db``). The smoke test
@@ -43,8 +54,9 @@ from app.notifier.telegram_notifier import (
     format_scored_job_message,
 )
 from app.services.job_monitor_service import JobMonitorService
+from app.sources.base_source import BaseSource
 from app.sources.dummy_source import DummySource
-from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
+from app.sources.hrpeak_source import HrPeakSource
 from app.utils.logger import logger, setup_logging
 
 
@@ -206,6 +218,86 @@ def run_test_telegram() -> int:
     return 0
 
 
+def _build_sources_from_config(config: dict) -> list[BaseSource]:
+    """Instantiate a list of sources from ``config.sources``.
+
+    V0.2 dispatch: only ``parser: hrpeak`` is recognised today; any
+    entry whose ``parser`` key is not a known value is logged and
+    skipped so a future unknown parser does not abort the run.
+    ``enabled: false`` entries are also skipped. Entries missing
+    required keys (``company``, ``url``) are logged and skipped
+    so a partial config cannot take the service down with a
+    confusing constructor error.
+
+    Adding a new parser means: add an ``elif`` arm here that imports
+    + constructs the parser, and document the new schema in
+    ``config.yaml``. No other code in this file needs to change.
+    """
+    raw_sources = config.get("sources") or []
+    if not isinstance(raw_sources, list):
+        logger.warning(
+            "config.sources is not a list; treating as empty "
+            f"(got {type(raw_sources).__name__})."
+        )
+        return []
+
+    built: list[BaseSource] = []
+    for index, entry in enumerate(raw_sources):
+        if not isinstance(entry, dict):
+            logger.warning(
+                f"sources[{index}] is not a mapping; skipping."
+            )
+            continue
+        if not entry.get("enabled", True):
+            logger.info(
+                f"sources[{index}] disabled by config; skipping."
+            )
+            continue
+
+        parser = str(entry.get("parser") or "").strip().lower()
+        if not parser:
+            logger.warning(
+                f"sources[{index}] has no 'parser' key; skipping."
+            )
+            continue
+
+        if parser == "hrpeak":
+            company = str(entry.get("company") or "").strip()
+            url = str(entry.get("url") or "").strip()
+            if not company or not url:
+                logger.warning(
+                    f"hrpeak source at index {index} missing "
+                    "'company' or 'url'; skipping."
+                )
+                continue
+            try:
+                built.append(
+                    HrPeakSource(company_name=company, careers_url=url)
+                )
+            except ValueError as exc:
+                logger.warning(
+                    f"hrpeak source at index {index} rejected: {exc}"
+                )
+                continue
+            logger.info(
+                f"Registered source: hrpeak / {company} -> {url}"
+            )
+        else:
+            logger.warning(
+                f"Unknown parser {parser!r} at sources[{index}]; "
+                "skipping. (Only 'hrpeak' is supported in this build.)"
+            )
+
+    if not built:
+        logger.error(
+            "No usable sources in config.sources. Add at least one "
+            "entry with parser='hrpeak' and enabled=true."
+        )
+        raise SystemExit(1)
+
+    return built
+
+
 def _parse_args() -> argparse.Namespace:
     """Parse CLI flags.
 
@@ -275,7 +367,11 @@ def main() -> int:
         return 1
     logger.info(f"Repository ready at {repository.db_path}.")
 
-    sources = [DummySource()] if args.use_dummy_source else [KafeinHrPeakSource()]
+    sources: list[BaseSource] = (
+        [DummySource()]
+        if args.use_dummy_source
+        else _build_sources_from_config(config)
+    )
 
     service = JobMonitorService(
         sources=sources,

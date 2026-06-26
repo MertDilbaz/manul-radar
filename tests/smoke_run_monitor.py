@@ -7,7 +7,7 @@ failure list, and exits 1.
 
 The test is hermetic on three axes:
 
-* **Network:** ``KafeinHrPeakSource.fetch_jobs`` is monkeypatched to
+* **Network:** ``HrPeakSource.fetch_jobs`` is monkeypatched to
   return a fixed list of jobs and ``requests.post`` (Telegram) is
   monkeypatched to a recording fake. The real Kafein site and the
   real Telegram API are never touched.
@@ -55,7 +55,7 @@ def _make_job(**overrides):
         location=None,
         work_type=None,
         seniority=None,
-        source="kafein_hrpeak",
+        source="kafein_technology_solutions",
         url="https://example.com/x",
         description=None,
         published_at=None,
@@ -155,7 +155,7 @@ def _run_monitor_in_temp_env(
     ``sys.argv``) so existing callers don't need to change.
     """
     import requests
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
+    from app.sources.hrpeak_source import HrPeakSource
 
     env_overrides: dict[str, str] = {"JOB_DB_PATH": db_path}
     if telegram_token is not None:
@@ -185,7 +185,7 @@ def _run_monitor_in_temp_env(
         with mock.patch.object(sys, "argv", cli_argv):
             with mock.patch.object(requests, "post", post):
                 with mock.patch.object(
-                    KafeinHrPeakSource,
+                    HrPeakSource,
                     "fetch_jobs",
                     return_value=fetch_jobs_returns if fetch_jobs_returns is not None else _build_realistic_jobs(),
                 ):
@@ -520,9 +520,9 @@ def _check_use_dummy_source_flag_parses() -> None:
 
 def _check_use_dummy_source_routes_to_dummy() -> None:
     """``--use-dummy-source`` must cause the monitor to consult
-    ``DummySource`` (and not ``KafeinHrPeakSource``).
+    ``DummySource`` (and not ``HrPeakSource``).
 
-    We assert this by *not* monkeypatching ``KafeinHrPeakSource`` in
+    We assert this by *not* monkeypatching ``HrPeakSource`` in
     the helper — if the wrong source is selected the real Kafein
     ``fetch_jobs`` is called and ``requests.post`` never gets hit
     (Kafein would either fail or, more dangerously, hit the live

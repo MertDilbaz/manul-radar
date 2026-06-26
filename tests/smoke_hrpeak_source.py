@@ -1,16 +1,21 @@
-"""Smoke test for KafeinHrPeakSource (parser contract, no network).
+"""Smoke test for HrPeakSource (parser contract, no network).
 
-Run with ``python tests/smoke_kafein_source.py`` from the project
+Run with ``python tests/smoke_hrpeak_source.py`` from the project
 root. Prints ``<NAME>_OK ...`` lines on success and exits 0. On any
-failure prints ``<NAME>_FAIL ...`` with the offending value, dumps
-the failure list, and exits 1.
+failure prints ``<NAME>_FAIL ...`` with the offending value, dumps the
+failure list, and exits 1.
 
 The smoke test never touches the network. It exercises the source's
-*pure* parser — :meth:`KafeinHrPeakSource._parse_jobs` — with
+*pure* parser — :meth:`HrPeakSource._parse_jobs` — with
 hand-crafted HTML samples so we can verify the empty-page, normal
 listing, dedup, junk-skip, and malformed-input branches in isolation.
-A network outage on ``kafein.hrpeak.com`` cannot make this test
-flaky.
+A network outage on the HRPeak host cannot make this test flaky.
+
+V0.2: the test instantiates ``HrPeakSource`` with the same
+constructor signature the production config uses, so the
+company/careers_url plumbing is exercised end-to-end. The Kafein
+``careers_url`` is hardcoded as the test fixture to keep behaviour
+identical to the pre-V0.2 Kafein-specific smoke.
 """
 from __future__ import annotations
 
@@ -32,7 +37,26 @@ def _record(name: str, ok: bool, detail: str = "") -> None:
         failures.append(name)
 
 
-# ------------------------------- sample HTML -----------------------------------
+# ------------------------------- fixtures ---------------------------------------
+
+
+# Canonical fixture values. The Kafein test data is the original
+# V0.1 set — V0.2 exercises the same parser logic, just routed
+# through a generic constructor instead of a hardcoded BASE_URL.
+_COMPANY = "Kafein Technology Solutions"
+_CAREERS_URL = "https://kafein.hrpeak.com/ilan/site.aspx"
+
+
+def _make_src():
+    """Build a fresh ``HrPeakSource`` for the Kafein fixture.
+
+    A new instance per test so per-instance state (none today,
+    but future fields may include per-run caches) does not leak
+    between cases.
+    """
+    from app.sources.hrpeak_source import HrPeakSource
+
+    return HrPeakSource(company_name=_COMPANY, careers_url=_CAREERS_URL)
 
 
 EMPTY_TR_HTML = """
@@ -85,7 +109,7 @@ MALFORMED_HTML = "<not really <html>"
 
 def _check_parse() -> None:
     try:
-        from app.sources.kafein_hrpeak_source import KafeinHrPeakSource  # noqa: F401
+        from app.sources.hrpeak_source import HrPeakSource  # noqa: F401
         import requests  # noqa: F401
         from bs4 import BeautifulSoup  # noqa: F401
     except Exception as exc:
@@ -95,30 +119,55 @@ def _check_parse() -> None:
 
 
 def _check_metadata() -> None:
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
-    src = KafeinHrPeakSource()
-    if src.name != "kafein_hrpeak":
+    """The constructor must accept company + url and surface them
+    on the instance. ``name`` is derived from the company."""
+    src = _make_src()
+    if src.name != "kafein_technology_solutions":
         _record("NAME", False, f"got {src.name!r}")
         return
-    if not KafeinHrPeakSource.BASE_URL.startswith("https://kafein.hrpeak.com"):
-        _record("BASE_URL", False, f"got {KafeinHrPeakSource.BASE_URL!r}")
+    if src.company_name != _COMPANY:
+        _record("COMPANY_FIELD", False, f"got {src.company_name!r}")
         return
-    if KafeinHrPeakSource.REQUEST_TIMEOUT <= 0:
-        _record("TIMEOUT", False, f"got {KafeinHrPeakSource.REQUEST_TIMEOUT}")
+    if src.careers_url != _CAREERS_URL:
+        _record("CAREERS_URL", False, f"got {src.careers_url!r}")
+        return
+    if not src.careers_url.startswith("https://kafein.hrpeak.com"):
+        _record("CAREERS_URL_HOST", False, f"got {src.careers_url!r}")
         return
     _record(
         "METADATA",
         True,
-        f"name={src.name} base={KafeinHrPeakSource.BASE_URL} "
-        f"timeout={KafeinHrPeakSource.REQUEST_TIMEOUT}s",
+        f"name={src.name} company={src.company_name} url={src.careers_url}",
     )
 
 
-def _check_empty_marker_tr() -> None:
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
+def _check_constructor_rejects_empty() -> None:
+    """Empty company / url must raise ValueError, not silently
+    fall back to defaults (the V0.2 contract is explicit inputs)."""
+    from app.sources.hrpeak_source import HrPeakSource
 
-    jobs = KafeinHrPeakSource._parse_jobs(EMPTY_TR_HTML)
+    try:
+        HrPeakSource(company_name="", careers_url=_CAREERS_URL)
+    except ValueError:
+        pass
+    else:
+        _record("EMPTY_COMPANY", False, "expected ValueError for empty company")
+        return
+
+    try:
+        HrPeakSource(company_name=_COMPANY, careers_url="")
+    except ValueError:
+        pass
+    else:
+        _record("EMPTY_URL", False, "expected ValueError for empty url")
+        return
+
+    _record("CONSTRUCTOR_VALIDATION", True, "empty company/url -> ValueError")
+
+
+def _check_empty_marker_tr() -> None:
+    src = _make_src()
+    jobs = src._parse_jobs(EMPTY_TR_HTML)
     if jobs != []:
         _record("EMPTY_TR", False, f"expected [], got {len(jobs)} jobs")
         return
@@ -126,9 +175,8 @@ def _check_empty_marker_tr() -> None:
 
 
 def _check_empty_marker_en() -> None:
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
-    jobs = KafeinHrPeakSource._parse_jobs(EMPTY_EN_HTML)
+    src = _make_src()
+    jobs = src._parse_jobs(EMPTY_EN_HTML)
     if jobs != []:
         _record("EMPTY_EN", False, f"expected [], got {len(jobs)} jobs")
         return
@@ -136,18 +184,16 @@ def _check_empty_marker_en() -> None:
 
 
 def _check_empty_html_string() -> None:
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
-    if KafeinHrPeakSource._parse_jobs("") != []:
+    src = _make_src()
+    if src._parse_jobs("") != []:
         _record("EMPTY_STRING", False, "expected [] for empty input")
         return
     _record("EMPTY_STRING", True, "empty string -> []")
 
 
 def _check_with_jobs_parses_listings() -> None:
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
-    jobs = KafeinHrPeakSource._parse_jobs(LISTING_WITH_JOBS_HTML)
+    src = _make_src()
+    jobs = src._parse_jobs(LISTING_WITH_JOBS_HTML)
     titles = [j.title for j in jobs]
 
     if len(jobs) != 2:
@@ -168,9 +214,8 @@ def _check_with_jobs_parses_listings() -> None:
 
 def _check_job_field_contract() -> None:
     """Each parsed Job must have correct title/company/source/url."""
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
-    jobs = KafeinHrPeakSource._parse_jobs(LISTING_WITH_JOBS_HTML)
+    src = _make_src()
+    jobs = src._parse_jobs(LISTING_WITH_JOBS_HTML)
 
     for job in jobs:
         if not job.title or len(job.title) < 3:
@@ -180,14 +225,14 @@ def _check_job_field_contract() -> None:
                 f"job title missing/short: {job.title!r}",
             )
             return
-        if job.company != "Kafein Technology Solutions":
+        if job.company != _COMPANY:
             _record(
                 "FIELD_COMPANY",
                 False,
                 f"unexpected company {job.company!r}",
             )
             return
-        if job.source != "kafein_hrpeak":
+        if job.source != "kafein_technology_solutions":
             _record(
                 "FIELD_SOURCE",
                 False,
@@ -208,8 +253,6 @@ def _check_job_field_contract() -> None:
                 f"discovered_at missing: {job.discovered_at!r}",
             )
             return
-        # Optional fields must default to None since the source does
-        # not have a way to learn them from the listing page.
         if job.location is not None:
             _record(
                 "FIELD_LOCATION_NONE",
@@ -239,16 +282,14 @@ def _check_job_field_contract() -> None:
 
 def _check_listing_url_excluded() -> None:
     """The listing page URL itself must NOT appear as a job URL."""
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
-    jobs = KafeinHrPeakSource._parse_jobs(LISTING_WITH_JOBS_HTML)
+    src = _make_src()
+    jobs = src._parse_jobs(LISTING_WITH_JOBS_HTML)
     urls = [j.url for j in jobs]
 
-    listing_url = "https://kafein.hrpeak.com/ilan/site.aspx"
+    listing_url = _CAREERS_URL
     if listing_url in urls:
         _record("LISTING_EXCLUDED", False, f"listing url leaked: {urls}")
         return
-    # Also ensure the bare site.aspx suffix cannot have slipped in.
     if any(u.rstrip("/").endswith("site.aspx") for u in urls):
         _record("LISTING_EXCLUDED", False, f"site.aspx suffix leaked: {urls}")
         return
@@ -256,10 +297,9 @@ def _check_listing_url_excluded() -> None:
 
 
 def _check_relative_url_resolved() -> None:
-    """Relative hrefs must be joined against BASE_URL."""
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
-    jobs = KafeinHrPeakSource._parse_jobs(LISTING_WITH_JOBS_HTML)
+    """Relative hrefs must be joined against the configured careers_url."""
+    src = _make_src()
+    jobs = src._parse_jobs(LISTING_WITH_JOBS_HTML)
     if not jobs:
         _record("RELATIVE_URL", False, "no jobs parsed")
         return
@@ -279,9 +319,8 @@ def _check_relative_url_resolved() -> None:
 
 def _check_url_dedup() -> None:
     """The same URL twice should produce a single Job, not two."""
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
-    jobs = KafeinHrPeakSource._parse_jobs(DEDUP_HTML)
+    src = _make_src()
+    jobs = src._parse_jobs(DEDUP_HTML)
     if len(jobs) != 1:
         _record(
             "DEDUP",
@@ -301,9 +340,8 @@ def _check_url_dedup() -> None:
 
 def _check_junk_title_skipped() -> None:
     """Empty / too-short titles must be skipped, not emitted as garbage."""
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
-    jobs = KafeinHrPeakSource._parse_jobs(JUNK_TITLE_HTML)
+    src = _make_src()
+    jobs = src._parse_jobs(JUNK_TITLE_HTML)
     titles = [j.title for j in jobs]
 
     if len(jobs) != 1:
@@ -325,16 +363,13 @@ def _check_junk_title_skipped() -> None:
 
 def _check_malformed_html_safe() -> None:
     """Malformed HTML must yield [] and not raise."""
-    from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
-
+    src = _make_src()
     try:
-        jobs = KafeinHrPeakSource._parse_jobs(MALFORMED_HTML)
+        jobs = src._parse_jobs(MALFORMED_HTML)
     except Exception as exc:
         _record("MALFORMED", False, f"raised: {exc!r}")
         return
 
-    # Either [] or harmless garbage is acceptable — the contract is
-    # "do not crash". Empty is what we get in practice; assert it.
     if jobs != []:
         _record(
             "MALFORMED",
@@ -346,18 +381,11 @@ def _check_malformed_html_safe() -> None:
 
 
 def _check_no_network_dependency_in_parse() -> None:
-    """The pure parser must not touch ``requests`` — only ``fetch_jobs`` should.
+    """The pure parser must not touch ``requests`` — only ``fetch_jobs`` should."""
+    import app.sources.hrpeak_source as mod
 
-    We assert by inspection: the static ``_parse_jobs`` method's
-    bytecode should not reference the requests module. This is the
-    lightest way to keep the test honest if the parser grows later.
-    """
-    import app.sources.kafein_hrpeak_source as mod
-
-    func = mod.KafeinHrPeakSource._parse_jobs
+    func = mod.HrPeakSource._parse_jobs
     closure_globals = func.__globals__
-    # The parser may legitimately import BeautifulSoup; it must NOT
-    # reference the requests module (that is fetch_jobs's job).
     if "requests" in closure_globals:
         # Just having requests imported at module level is fine
         # (fetch_jobs uses it). What matters is that _parse_jobs does
@@ -372,9 +400,32 @@ def _check_no_network_dependency_in_parse() -> None:
     )
 
 
+def _check_company_slug_derivation() -> None:
+    """``name`` is a stable, log-friendly slug of the company name."""
+    from app.sources.hrpeak_source import HrPeakSource
+
+    cases = [
+        ("Kafein Technology Solutions", "kafein_technology_solutions"),
+        ("Foo-Bar.co", "foo_bar_co"),
+        ("  spaced  out  ", "spaced_out"),
+        ("A", "a"),
+    ]
+    for company, expected_slug in cases:
+        src = HrPeakSource(company_name=company, careers_url=_CAREERS_URL)
+        if src.name != expected_slug:
+            _record(
+                "SLUG",
+                False,
+                f"{company!r} -> {src.name!r}, expected {expected_slug!r}",
+            )
+            return
+    _record("SLUG", True, "company name -> stable slug")
+
+
 def main() -> int:
     _check_parse()
     _check_metadata()
+    _check_constructor_rejects_empty()
     _check_empty_marker_tr()
     _check_empty_marker_en()
     _check_empty_html_string()
@@ -386,11 +437,12 @@ def main() -> int:
     _check_junk_title_skipped()
     _check_malformed_html_safe()
     _check_no_network_dependency_in_parse()
+    _check_company_slug_derivation()
 
     if failures:
         print(f"FAILED: {failures}")
         return 1
-    print("ALL_KAFEIN_OK")
+    print("ALL_HRPEAK_OK")
     return 0
 
 
