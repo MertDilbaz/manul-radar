@@ -43,6 +43,7 @@ from app.notifier.telegram_notifier import (
     format_scored_job_message,
 )
 from app.services.job_monitor_service import JobMonitorService
+from app.sources.dummy_source import DummySource
 from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
 from app.utils.logger import logger, setup_logging
 
@@ -208,17 +209,21 @@ def run_test_telegram() -> int:
 def _parse_args() -> argparse.Namespace:
     """Parse CLI flags.
 
-    Kept tiny on purpose: the only switch today is
-    ``--test-telegram``. ``main`` is the default, mirroring the
-    pre-argparse behavior so existing invocations
-    (``python run_monitor.py``) keep working.
+    Kept tiny on purpose: the switches today are ``--test-telegram``
+    (connectivity check, no monitoring) and ``--use-dummy-source``
+    (swap the real Kafein source for the in-process ``DummySource``
+    so the full persist + Telegram notification path can be exercised
+    on a fresh checkout with no network access). ``main`` is the
+    default, mirroring the pre-argparse behavior so existing
+    invocations (``python run_monitor.py``) keep working.
     """
     parser = argparse.ArgumentParser(
         prog="run_monitor",
         description=(
             "Manul Sentinel real monitor (Kafein -> Score -> Persist -> "
             "Telegram). Use --test-telegram for a connectivity check "
-            "without running the workflow."
+            "without running the workflow, or --use-dummy-source to "
+            "swap the real source for an in-process fixture."
         ),
     )
     parser.add_argument(
@@ -227,6 +232,15 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Skip monitoring; send a single Telegram test message to "
             "verify the bot token / chat id wiring."
+        ),
+    )
+    parser.add_argument(
+        "--use-dummy-source",
+        action="store_true",
+        help=(
+            "Replace the Kafein source with DummySource. Useful for "
+            "end-to-end smoke testing of the persist + Telegram path "
+            "without scraping the live job board."
         ),
     )
     return parser.parse_args()
@@ -261,7 +275,7 @@ def main() -> int:
         return 1
     logger.info(f"Repository ready at {repository.db_path}.")
 
-    sources = [KafeinHrPeakSource()]
+    sources = [DummySource()] if args.use_dummy_source else [KafeinHrPeakSource()]
 
     service = JobMonitorService(
         sources=sources,

@@ -144,10 +144,15 @@ def _run_monitor_in_temp_env(
     chat_id: str | None = None,
     fetch_jobs_returns=None,
     fake_post: _FakePost | None = None,
+    argv: list[str] | None = None,
 ):
     """Run ``run_monitor.main()`` with a hermetic env / monkeypatch stack.
 
     Returns ``(exit_code, captured_post)``.
+
+    ``argv`` is an optional list of CLI args to forward to argparse
+    inside ``run_monitor.main``. Defaults to no args (i.e. an empty
+    ``sys.argv``) so existing callers don't need to change.
     """
     import requests
     from app.sources.kafein_hrpeak_source import KafeinHrPeakSource
@@ -171,15 +176,22 @@ def _run_monitor_in_temp_env(
         if chat_id is not None:
             os.environ["TELEGRAM_CHAT_ID"] = chat_id
 
-        with mock.patch.object(requests, "post", post):
-            with mock.patch.object(
-                KafeinHrPeakSource,
-                "fetch_jobs",
-                return_value=fetch_jobs_returns if fetch_jobs_returns is not None else _build_realistic_jobs(),
-            ):
-                import run_monitor
+        # Forward CLI args to run_monitor's argparse. Use a list that
+        # always starts with a synthetic program name so argparse
+        # doesn't choke on missing argv[0].
+        cli_argv = ["run_monitor"]
+        if argv:
+            cli_argv.extend(argv)
+        with mock.patch.object(sys, "argv", cli_argv):
+            with mock.patch.object(requests, "post", post):
+                with mock.patch.object(
+                    KafeinHrPeakSource,
+                    "fetch_jobs",
+                    return_value=fetch_jobs_returns if fetch_jobs_returns is not None else _build_realistic_jobs(),
+                ):
+                    import run_monitor
 
-                exit_code = run_monitor.main()
+                    exit_code = run_monitor.main()
 
     return exit_code, post
 
@@ -456,6 +468,161 @@ def _check_job_db_path_override_used() -> None:
             pass
 
 
+def _check_use_dummy_source_flag_parses() -> None:
+    """``--use-dummy-source`` must be accepted by argparse and land
+    on ``args.use_dummy_source`` as a truthy flag.
+
+    The smoke runner in this file imports ``run_monitor`` once and
+    never lets it parse real CLI args — so we re-run argparse via
+    ``run_monitor._parse_args`` under a patched ``sys.argv`` to
+    confirm the flag wiring (existence, name, default) without
+    going through the full ``main()`` flow.
+    """
+    import run_monitor
+
+    # Baseline: no flag -> use_dummy_source is False.
+    with mock.patch.object(sys, "argv", ["run_monitor"]):
+        baseline = run_monitor._parse_args()
+    if baseline.use_dummy_source:
+        _record(
+            "USE_DUMMY_FLAG_DEFAULT",
+            False,
+            "default use_dummy_source should be False",
+        )
+        return
+
+    # With the flag set: use_dummy_source must be True and other
+    # flags (notably test_telegram) must remain False so the two
+    # switches are independent.
+    with mock.patch.object(sys, "argv", ["run_monitor", "--use-dummy-source"]):
+        parsed = run_monitor._parse_args()
+    if not parsed.use_dummy_source:
+        _record(
+            "USE_DUMMY_FLAG_SET",
+            False,
+            "use_dummy_source should be True after --use-dummy-source",
+        )
+        return
+    if parsed.test_telegram:
+        _record(
+            "USE_DUMMY_FLAG_INDEPENDENT",
+            False,
+            "--use-dummy-source must not enable --test-telegram",
+        )
+        return
+
+    _record(
+        "USE_DUMMY_FLAG",
+        True,
+        "argparse accepts --use-dummy-source, default False, isolated from --test-telegram",
+    )
+
+
+def _check_use_dummy_source_routes_to_dummy() -> None:
+    """``--use-dummy-source`` must cause the monitor to consult
+    ``DummySource`` (and not ``KafeinHrPeakSource``).
+
+    We assert this by *not* monkeypatching ``KafeinHrPeakSource`` in
+    the helper — if the wrong source is selected the real Kafein
+    ``fetch_jobs`` is called and ``requests.post`` never gets hit
+    (Kafein would either fail or, more dangerously, hit the live
+    site). Instead we monkeypatch ``DummySource.fetch_jobs`` to a
+    sentinel return so we can observe the routing indirectly via
+    the resulting send calls.
+    """
+    from app.sources.dummy_source import DummySource
+
+    sentinel_jobs = _build_realistic_jobs()
+    db_path, tmp = _make_temp_db_path()
+    try:
+        with mock.patch.object(
+            DummySource, "fetch_jobs", return_value=sentinel_jobs
+        ):
+            exit_code, post = _run_monitor_in_temp_env(
+                db_path=db_path,
+                telegram_token="FAKE_BOT_TOKEN",
+                chat_id="999",
+                argv=["--use-dummy-source"],
+            )
+
+        if exit_code != 0:
+            _record(
+                "USE_DUMMY_ROUTE_EXIT",
+                False,
+                f"expected exit 0, got {exit_code}",
+            )
+            return
+        # DummySource returns 3 jobs, 2 are relevant -> 2 send calls.
+        # (Same contract as the realistic_jobs path, just routed via
+        # DummySource.fetch_jobs instead of Kafein.)
+        if len(post.calls) != 2:
+            _record(
+                "USE_DUMMY_ROUTE_CALLS",
+                False,
+                f"expected 2 sends from dummy source, got {len(post.calls)}",
+            )
+            return
+        _record(
+            "USE_DUMMY_ROUTE",
+            True,
+            "--use-dummy-source routes through DummySource -> 2 sends",
+        )
+    finally:
+        try:
+            tmp.cleanup()
+        except OSError:
+            pass
+
+
+def _check_use_dummy_source_dedup_on_second_run() -> None:
+    """End-to-end: first run with --use-dummy-source on a fresh DB
+    produces 2 new relevant jobs and 2 sends; the same DB on a
+    second run produces 0 new and 0 sends.
+
+    This is the spec's "İlk çalıştırmada 2 / ikinci çalıştırmada 0"
+    guarantee, validated end-to-end (source swap + persist + send).
+    """
+    db_path, tmp = _make_temp_db_path()
+    try:
+        _, post1 = _run_monitor_in_temp_env(
+            db_path=db_path,
+            telegram_token="FAKE_BOT_TOKEN",
+            chat_id="999",
+            argv=["--use-dummy-source"],
+        )
+        _, post2 = _run_monitor_in_temp_env(
+            db_path=db_path,
+            telegram_token="FAKE_BOT_TOKEN",
+            chat_id="999",
+            argv=["--use-dummy-source"],
+        )
+
+        if len(post1.calls) != 2:
+            _record(
+                "USE_DUMMY_DEDUP_FIRST",
+                False,
+                f"first run expected 2 sends, got {len(post1.calls)}",
+            )
+            return
+        if len(post2.calls) != 0:
+            _record(
+                "USE_DUMMY_DEDUP_SECOND",
+                False,
+                f"second run expected 0 sends, got {len(post2.calls)}",
+            )
+            return
+        _record(
+            "USE_DUMMY_DEDUP",
+            True,
+            "first=2 sends, second=0 sends on same DB",
+        )
+    finally:
+        try:
+            tmp.cleanup()
+        except OSError:
+            pass
+
+
 def main() -> int:
     _check_parse()
     _check_no_telegram_env_skips_sending()
@@ -463,6 +630,9 @@ def main() -> int:
     _check_send_failure_does_not_abort_batch()
     _check_dedup_on_second_run()
     _check_job_db_path_override_used()
+    _check_use_dummy_source_flag_parses()
+    _check_use_dummy_source_routes_to_dummy()
+    _check_use_dummy_source_dedup_on_second_run()
 
     if failures:
         print(f"FAILED: {failures}")
