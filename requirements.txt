@@ -1,2 +1,4 @@
 loguru==0.7.3
 PyYAML==6.0.3
+beautifulsoup4==4.15.0
+requests==2.34.2
