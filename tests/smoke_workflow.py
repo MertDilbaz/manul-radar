@@ -558,32 +558,238 @@ def _check_service_returns_list_of_scored_jobs() -> None:
     _record("SERVICE_TYPE", True, f"{len(relevant)} ScoredJob entries")
 
 
+# ------------------------------- JobMonitorService + repository ----------------
+
+
+def _build_realistic_scorer():
+    """A scorer that matches the same keywords config.yaml uses."""
+    return _build_scorer(
+        include=[
+            "java", "spring", "backend", "sql", "rest", "junior",
+            "new graduate", "application support", "erp", "integration",
+        ],
+        exclude=["senior", "lead", "5+ years"],
+        threshold=50,
+    )
+
+
+def _make_temp_repo():
+    """Return (db_path, JobRepository, tempdir_handle) — caller must cleanup."""
+    import tempfile
+    from app.database.job_repository import JobRepository
+
+    tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    data_dir = Path(tmp.name) / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    db_path = str(data_dir / "jobs.db")
+    repo = JobRepository(db_path=db_path)
+    repo.init_db()
+    return tmp, db_path, repo
+
+
+def _count_in_db(db_path: str) -> int:
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.execute("SELECT COUNT(*) FROM jobs;")
+        return int(cursor.fetchone()[0])
+
+
+def _check_service_repository_first_run() -> None:
+    """First run with a fresh repository: 2 new relevant jobs persisted."""
+    from app.services.job_monitor_service import JobMonitorService
+    from app.sources.dummy_source import DummySource
+
+    tmp, db_path, repo = _make_temp_repo()
+    try:
+        service = JobMonitorService(
+            sources=[DummySource()],
+            scorer=_build_realistic_scorer(),
+            repository=repo,
+        )
+        new_relevant = service.run()
+
+        if len(new_relevant) != 2:
+            _record(
+                "REPO_FIRST_RUN_COUNT",
+                False,
+                f"expected 2 new relevant, got {len(new_relevant)}",
+            )
+            return
+        if _count_in_db(db_path) != 2:
+            _record(
+                "REPO_FIRST_DB_COUNT",
+                False,
+                f"expected 2 rows in db, got {_count_in_db(db_path)}",
+            )
+            return
+        _record(
+            "REPO_FIRST_RUN",
+            True,
+            f"{len(new_relevant)} new relevant, db has 2 rows",
+        )
+    finally:
+        try:
+            tmp.cleanup()
+        except OSError:
+            pass
+
+
+def _check_service_repository_second_run_dedups() -> None:
+    """Second run with same repository: 0 new, db count unchanged."""
+    from app.services.job_monitor_service import JobMonitorService
+    from app.sources.dummy_source import DummySource
+
+    tmp, db_path, repo = _make_temp_repo()
+    try:
+        scorer = _build_realistic_scorer()
+        service = JobMonitorService(
+            sources=[DummySource()],
+            scorer=scorer,
+            repository=repo,
+        )
+
+        # First run populates the repo.
+        first = service.run()
+        if len(first) != 2:
+            _record(
+                "REPO_DEDUP_PRECONDITION",
+                False,
+                f"first run should yield 2, got {len(first)}",
+            )
+            return
+
+        # Second run with same repo — DummySource returns identical URLs,
+        # so both jobs must be filtered out by has_seen.
+        second_service = JobMonitorService(
+            sources=[DummySource()],
+            scorer=scorer,
+            repository=repo,
+        )
+        second = second_service.run()
+
+        if len(second) != 0:
+            _record(
+                "REPO_DEDUP_SECOND_RUN",
+                False,
+                f"expected 0 new on second run, got {len(second)}",
+            )
+            return
+        if _count_in_db(db_path) != 2:
+            _record(
+                "REPO_DEDUP_DB_COUNT",
+                False,
+                f"db count drifted to {_count_in_db(db_path)}, expected 2",
+            )
+            return
+        _record(
+            "REPO_DEDUP",
+            True,
+            "second run returned 0 new, db count unchanged at 2",
+        )
+    finally:
+        try:
+            tmp.cleanup()
+        except OSError:
+            pass
+
+
+def _check_service_repository_skips_senior() -> None:
+    """Senior job is irrelevant → not persisted, not in returned list."""
+    import sqlite3
+    from app.services.job_monitor_service import JobMonitorService
+    from app.sources.dummy_source import DummySource
+
+    tmp, db_path, repo = _make_temp_repo()
+    try:
+        service = JobMonitorService(
+            sources=[DummySource()],
+            scorer=_build_realistic_scorer(),
+            repository=repo,
+        )
+        service.run()
+
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.execute(
+                "SELECT title FROM jobs WHERE title LIKE '%Senior%';"
+            )
+            senior_rows = cursor.fetchall()
+
+        if senior_rows:
+            _record(
+                "REPO_NO_SENIOR",
+                False,
+                f"senior leaked into db: {senior_rows}",
+            )
+            return
+        _record("REPO_NO_SENIOR", True, "senior job not persisted")
+    finally:
+        try:
+            tmp.cleanup()
+        except OSError:
+            pass
+
+
 # ------------------------------- main.py subprocess ----------------------------
 
 
 def _check_main_subprocess() -> None:
-    proc = subprocess.run(
-        [sys.executable, "main.py"],
-        cwd=str(PROJECT_ROOT),
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    """Run main.py end-to-end and verify its logs.
+
+    The repository contract here is "fresh DB → 2 new relevant
+    postings", which requires the real ``data/jobs.db`` to be
+    absent. To avoid clobbering the user's real database, we
+    rename it aside if present, run main.py in the project root
+    cwd (so ``app/config/config.yaml`` resolves correctly), and
+    restore the original file in the finally block.
+
+    The second-run dedup behavior is covered separately by the
+    ``REPO_DEDUP`` service-level test, which uses an isolated
+    tempdir — so this test stays focused on the happy path.
+    """
+    db_path = PROJECT_ROOT / "data" / "jobs.db"
+    backup_path = PROJECT_ROOT / "data" / "jobs.db.smokebak"
+    had_existing = db_path.exists()
+    if had_existing:
+        db_path.rename(backup_path)
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "main.py")],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        # Whatever happened, put the original db back where it was.
+        # main.py may have created a fresh jobs.db during the run;
+        # remove that before restoring the backup so we never
+        # silently overwrite the user's real data.
+        if db_path.exists():
+            try:
+                db_path.unlink()
+            except OSError:
+                pass
+        if had_existing and backup_path.exists():
+            backup_path.rename(db_path)
+
     if proc.returncode != 0:
         _record(
             "MAIN_EXIT",
             False,
-            f"exit={proc.returncode} stderr={proc.stderr.strip()[:300]}",
+            f"exit={proc.returncode} stderr={proc.stderr.strip()!r} "
+            f"stdout_tail={proc.stdout.strip()[-400:]!r}",
         )
         return
 
     expected_tokens = [
         "Manul Sentinel starting",
         "Config loaded successfully",
+        "Repository ready at data/jobs.db",
         "JobMonitorService starting with 1 source(s)",
         "Source 'dummy' returned 3 job(s)",
-        "JobMonitorService completed: 2 relevant out of 3 total",
-        "Workflow produced 2 relevant job(s)",
+        "JobMonitorService completed: 2 new relevant out of 3 total",
+        "Workflow produced 2 new relevant job(s)",
         "Junior Java Backend Developer",
         "Application Support Specialist",
         "Monitoring workflow completed",
@@ -594,13 +800,6 @@ def _check_main_subprocess() -> None:
         _record("MAIN_LOGS", False, f"missing log tokens: {missing}")
         return
 
-    senior_lines = [
-        ln for ln in combined.splitlines() if "Senior Backend Lead" in ln
-    ]
-    # Service logs include 'Source 'dummy' returned 3 job(s); scoring.' but the
-    # senior line itself should NOT appear in the relevant-job list (which
-    # only logs junior + appsup). We tolerate it appearing in any debug line,
-    # but the per-relevant-job log line should not mention senior.
     relevant_block_started = False
     relevant_block_lines: list[str] = []
     for ln in combined.splitlines():
@@ -645,6 +844,9 @@ def main() -> int:
     _check_service_filters_irrelevant()
     _check_service_isolates_source_failures()
     _check_service_returns_list_of_scored_jobs()
+    _check_service_repository_first_run()
+    _check_service_repository_second_run_dedups()
+    _check_service_repository_skips_senior()
     _check_main_subprocess()
 
     if failures:

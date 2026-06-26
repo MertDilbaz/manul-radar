@@ -1,15 +1,22 @@
 """Manul Sentinel — entry point.
 
-Bootstraps the logger, loads configuration, wires the source layer into
-the filter pipeline through :class:`JobMonitorService`, and reports
-which jobs came back as relevant. The V1 monitoring workflow ends
-there: persistence and notification are intentionally deferred to
-later stages, but the full Source → Score → Filter path is now live
-and exercised end-to-end on every run.
+Bootstraps the logger, loads configuration, wires the source layer
+into the filter pipeline through :class:`JobMonitorService`, persists
+new relevant postings via :class:`JobRepository`, and reports what
+came back. The V1 monitoring workflow ends there: notification,
+scheduling, and real scraping are intentionally deferred to later
+stages, but the full Source → Score → Filter → Persist path is now
+live and exercised end-to-end on every run.
+
+The repository is optional in the service contract but always wired
+here. On a fresh checkout the SQLite database is created under
+``data/jobs.db``; on subsequent runs URLs already in the database are
+treated as already-seen and the workflow reports zero new postings.
 """
 from __future__ import annotations
 
 from app.config.config_loader import load_config
+from app.database.job_repository import JobRepository
 from app.filters.job_scorer import JobScorer
 from app.services.job_monitor_service import JobMonitorService
 from app.sources.dummy_source import DummySource
@@ -69,11 +76,25 @@ def main() -> int:
     scorer = _build_scorer(config)
     sources = [DummySource()]
 
-    service = JobMonitorService(sources=sources, scorer=scorer)
-    relevant_jobs = service.run()
+    repository = JobRepository(db_path="data/jobs.db")
+    try:
+        repository.init_db()
+    except Exception as exc:
+        logger.error(f"Failed to initialize repository: {exc}")
+        return 1
+    logger.info(f"Repository ready at {repository.db_path}.")
 
-    logger.info(f"Workflow produced {len(relevant_jobs)} relevant job(s).")
-    for scored in relevant_jobs:
+    service = JobMonitorService(
+        sources=sources,
+        scorer=scorer,
+        repository=repository,
+    )
+    new_relevant = service.run()
+
+    logger.info(
+        f"Workflow produced {len(new_relevant)} new relevant job(s)."
+    )
+    for scored in new_relevant:
         logger.info(
             f"  - [{scored.job.source}] {scored.job.title} @ "
             f"{scored.job.company} | score={scored.score} | "
