@@ -1,0 +1,30 @@
+telegram:
+  token_env: TELEGRAM_BOT_TOKEN
+  chat_id_env: TELEGRAM_CHAT_ID
+
+scoring:
+  minimum_score: 50
+  include_weight: 20
+  exclude_weight: 40
+
+keywords:
+  include:
+    - java
+    - spring
+    - backend
+    - sql
+    - rest
+    - junior
+    - new graduate
+    - application support
+    - technical support
+    - erp
+    - integration
+  exclude:
+    - senior
+    - lead
+    - principal
+    - 5+ years
+    - react native
+    - flutter
+    - embedded

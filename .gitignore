@@ -1,0 +1,23 @@
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Local config / secrets ---
+.env
+*.local.yaml
+
+# --- Runtime artifacts ---
+logs/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
