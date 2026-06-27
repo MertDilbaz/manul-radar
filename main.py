@@ -37,9 +37,26 @@ def _build_scorer(config: dict) -> JobScorer:
 
     include = list(keywords_cfg.get("include") or [])
     exclude = list(keywords_cfg.get("exclude") or [])
+    hard_exclude = list(keywords_cfg.get("hard_exclude") or [])
+    domain_required = list(keywords_cfg.get("domain_required") or [])
+    non_target_domain = list(keywords_cfg.get("non_target_domain") or [])
+    source_boost = list(keywords_cfg.get("source_boost") or [])
+    location_required = list(keywords_cfg.get("location_required") or [])
+    location_reject = list(keywords_cfg.get("location_reject") or [])
+    role_required = list(keywords_cfg.get("role_required") or [])
     minimum_score = int(scoring_cfg.get("minimum_score", 0))
     include_weight = int(scoring_cfg.get("include_weight", 20))
     exclude_weight = int(scoring_cfg.get("exclude_weight", 40))
+    source_boost_weight = int(scoring_cfg.get("source_boost_weight", 8))
+    hard_exclude_experience_years_raw = scoring_cfg.get(
+        "hard_exclude_experience_years",
+        4,
+    )
+    hard_exclude_experience_years = (
+        int(hard_exclude_experience_years_raw)
+        if hard_exclude_experience_years_raw is not None
+        else None
+    )
 
     if not include and not exclude:
         logger.warning(
@@ -53,6 +70,15 @@ def _build_scorer(config: dict) -> JobScorer:
         minimum_score=minimum_score,
         include_weight=include_weight,
         exclude_weight=exclude_weight,
+        hard_exclude_keywords=hard_exclude,
+        hard_exclude_experience_years=hard_exclude_experience_years,
+        domain_required_keywords=domain_required,
+        non_target_domain_keywords=non_target_domain,
+        source_boost_keywords=source_boost,
+        source_boost_weight=source_boost_weight,
+        location_required_keywords=location_required,
+        location_reject_keywords=location_reject,
+        role_required_keywords=role_required,
     )
 
 

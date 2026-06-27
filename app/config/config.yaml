@@ -1,36 +1,645 @@
 telegram:
   token_env: TELEGRAM_BOT_TOKEN
   chat_id_env: TELEGRAM_CHAT_ID
-
-sources:
-  - parser: hrpeak
-    company: Kafein Technology Solutions
-    url: https://kafein.hrpeak.com/ilan/site.aspx
-    enabled: true
-
+notification:
+  mode: digest_pages
+  greeting: 'Günaydın Mert, işte sana uygun yeni iş ilanları:'
+  jobs_per_page: 4
+  max_pages: 3
+  max_jobs_in_digest: 12
+  safe_char_limit: 3800
+  send_empty_report: true
+  empty_message: Günaydın Mert. Bugün filtrelerine uygun yeni iş ilanı bulamadım.
 scoring:
-  minimum_score: 50
+  minimum_score: 40
   include_weight: 20
   exclude_weight: 40
-
+  source_boost_weight: 8
+  hard_exclude_experience_years: 4
+  debug_top_rejected: 20
 keywords:
+  domain_required:
+  - java
+  - spring
+  - spring boot
+  - backend
+  - back-end
+  - back end
+  - yazılım
+  - yazilim
+  - software
+  - developer
+  - geliştirici
+  - gelistirici
+  - programcı
+  - programci
+  - bilgisayar mühendisi
+  - bilgisayar muhendisi
+  - bilgi teknolojileri
+  - bilişim
+  - bilisim
+  - application support
+  - software support
+  - uygulama destek
+  - yazılım destek
+  - yazilim destek
+  - teknik destek yazılım
+  - teknik destek yazilim
+  - sql destek
+  - erp destek
+  - entegrasyon destek
+  - entegrasyon
+  - integration
+  - sql
+  - rest
+  - api
+  - sistem destek
+  - software engineer
+  - software developer
+  - backend engineer
+  - backend developer
+  - application support engineer
+  - technical support
+  - technical support engineer
+  - it support
+  - support engineer
+  - software support engineer
+  - production support
+  - implementation engineer
+  - integration engineer
+  - customer support engineer
+  - solutions engineer
+  - computer science
+  - computer engineering
+  - developer intern
+  - software intern
+  - new grad software
+  - associate software
+  - graduate software
+  - yazılım geliştirici
+  - yazilim gelistirici
+  - yazılım mühendisi
+  - yazilim muhendisi
+  - java developer
+  - java yazılım
+  - java yazilim
+  - it specialist
+  - bilgi teknolojileri uzmanı
+  - bilgi teknolojileri uzmani
+  - uygulama destek uzmanı
+  - uygulama destek uzmani
+  - yazılım destek uzmanı
+  - yazilim destek uzmani
+  - erp destek uzmanı
+  - erp destek uzmani
   include:
-    - java
-    - spring
-    - backend
-    - sql
-    - rest
-    - junior
-    - new graduate
-    - application support
-    - technical support
-    - erp
-    - integration
+  - java
+  - spring boot
+  - spring
+  - backend
+  - back-end
+  - back end
+  - rest
+  - restful
+  - api
+  - sql
+  - mysql
+  - postgresql
+  - hibernate
+  - jpa
+  - microservice
+  - microservices
+  - mikroservis
+  - junior
+  - yeni mezun
+  - yetiştirilmek üzere
+  - yetistirilmek uzere
+  - entry level
+  - başlangıç seviyesi
+  - baslangic seviyesi
+  - uzman yardımcısı
+  - uzman yardimcisi
+  - asistan yazılım
+  - asistan yazilim
+  - application support
+  - software support
+  - support specialist
+  - uygulama destek
+  - yazılım destek
+  - yazilim destek
+  - teknik destek yazılım
+  - teknik destek yazilim
+  - sql destek
+  - erp destek
+  - entegrasyon destek
+  - entegrasyon
+  - integration support
+  - integration specialist
+  - bilgi teknolojileri
+  - bilisim
+  - bilişim
+  - sistem destek
+  - software engineer
+  - software developer
+  - backend engineer
+  - backend developer
+  - associate software engineer
+  - associate software developer
+  - associate backend engineer
+  - graduate software engineer
+  - graduate software developer
+  - new grad
+  - new graduate
+  - graduate program
+  - graduate developer
+  - entry level software
+  - entry level developer
+  - entry-level software
+  - entry-level developer
+  - trainee
+  - software trainee
+  - engineering trainee
+  - developer intern
+  - software intern
+  - computer engineering
+  - technical support
+  - technical support engineer
+  - it support
+  - support engineer
+  - software support engineer
+  - application support engineer
+  - production support
+  - customer support engineer
+  - implementation specialist
+  - implementation engineer
+  - integration engineer
+  - solutions engineer
+  - solution engineer
+  - platform support
+  - api support
+  - product support
+  - fresh graduate
+  - recent graduate
+  - stajyer yazılım
+  - stajyer yazilim
+  - junior java
+  - junior backend
+  - new graduate software
+  - yeni mezun yazılım
+  - yeni mezun yazilim
+  - yetiştirilmek üzere yazılım
+  - yetistirilmek uzere yazilim
+  - yazılım geliştirici
+  - yazilim gelistirici
+  - yazılım geliştirme
+  - yazilim gelistirme
+  - yazılım mühendisi
+  - yazilim muhendisi
+  - java developer
+  - java yazılım
+  - java yazilim
+  - spring boot developer
+  - application support specialist
+  - uygulama destek uzmanı
+  - uygulama destek uzmani
+  - yazılım destek uzmanı
+  - yazilim destek uzmani
+  - bilgi teknolojileri uzmanı
+  - bilgi teknolojileri uzmani
+  - bilgi teknolojileri uzman yardımcısı
+  - bilgi teknolojileri uzman yardimcisi
+  - it specialist
+  - it support specialist
+  - technical support specialist
+  - entegrasyon uzmanı
+  - entegrasyon uzmani
+  - entegrasyon uzman yardımcısı
+  - entegrasyon uzman yardimcisi
+  - erp destek uzmanı
+  - erp destek uzmani
+  - developer
+  - geliştirici
+  - gelistirici
+  source_boost:
+  - java
+  - spring
+  - backend
+  - junior
+  - yeni mezun
+  - yetistirilmek uzere
+  - yazilim destek
+  - uygulama destek
+  - sql destek
+  - erp destek
+  - entegrasyon destek
+  - software
+  - associate
+  - graduate
+  - new grad
+  - trainee
+  - support
+  - technical support
+  - implementation
+  - integration
+  - api
+  - sql
+  - software developer
+  - software engineer
+  - java developer
+  - backend developer
+  - yazilim gelistirici
+  - it support
   exclude:
-    - senior
-    - lead
-    - principal
-    - 5+ years
-    - react native
-    - flutter
-    - embedded
+  - frontend
+  - front-end
+  - front end
+  - react developer
+  - angular developer
+  - vue developer
+  - business analyst
+  - iş analisti
+  - is analisti
+  - product owner
+  - proje yöneticisi
+  - proje yoneticisi
+  - sales development
+  - account executive
+  - sales manager
+  - customer success manager
+  - recruiter
+  - talent acquisition
+  - marketing manager
+  - seo specialist
+  - content specialist
+  - social media
+  - finance analyst
+  - financial analyst
+  non_target_domain:
+  - ithalat
+  - ihracat
+  - dış ticaret
+  - dis ticaret
+  - muhasebe
+  - mali işler
+  - mali isler
+  - finans
+  - planlama
+  - üretim planlama
+  - uretim planlama
+  - satın alma
+  - satin alma
+  - lojistik
+  - depo
+  - insan kaynakları
+  - insan kaynaklari
+  - pazarlama
+  - satış
+  - satis
+  - müşteri temsilcisi
+  - musteri temsilcisi
+  - çağrı merkezi
+  - cagri merkezi
+  - kalite
+  - tekstil
+  - tersane
+  - denizcilik
+  - sağlık
+  - saglik
+  - diş sağlığı
+  - dis sagligi
+  - ağız ve diş
+  - agiz ve dis
+  - account executive
+  - customer success
+  - recruiter
+  - talent acquisition
+  - human resources
+  - hr specialist
+  - marketing
+  - seo
+  - content
+  - social media
+  - legal
+  - lawyer
+  - avukat
+  - designer
+  - graphic designer
+  - video editor
+  - business development
+  - sales development
+  - account manager
+  hard_exclude:
+  - senior
+  - sr.
+  - kıdemli
+  - kidemli
+  - lead
+  - lider
+  - takım lideri
+  - takim lideri
+  - ekip lideri
+  - müdür
+  - mudur
+  - manager
+  - principal
+  - architect
+  - mimar
+  - director
+  - uzman erp
+  - erp uzmanı
+  - erp uzmani
+  - erp mühendisi
+  - erp muhendisi
+  - erp danışmanı
+  - erp danismani
+  - react native
+  - flutter
+  - mobil uygulama
+  - mobile application
+  - android developer
+  - ios developer
+  - embedded
+  - gömülü
+  - gomulu
+  - qa engineer
+  - quality assurance
+  - test engineer
+  - test automation
+  - devops
+  - site reliability
+  - sre
+  - sap consultant
+  - sap danışmanı
+  - sap danismani
+  - sap uzmanı
+  - sap uzmani
+  - senior consultant
+  - principal consultant
+  - lead consultant
+  - management consultant
+  - business consultant
+  - functional consultant
+  - erp functional consultant
+  - solution architect
+  - engineering manager
+  - software engineering manager
+  - product manager
+  - head of engineering
+  - head of software
+  - staff engineer
+  - staff software engineer
+  - php
+  - php developer
+  - php uzmanı
+  - php uzmani
+  - wordpress
+  - laravel
+  - magento
+  - drupal
+  - shopify developer
+  - frontend developer
+  - front end developer
+  - front-end developer
+  - ui developer
+  - react developer
+  - vue developer
+  - angular developer
+  - data scientist
+  - data analyst
+  - business intelligence
+  - bi developer
+  - database administrator
+  - dba
+  - system administrator
+  - network engineer
+  - cyber security
+  - security analyst
+  - salesforce
+  - salesforce developer
+  location_required:
+  - türkiye
+  - turkiye
+  - turkey
+  - istanbul
+  - ankara
+  - izmir
+  - manisa
+  - akhisar
+  - bursa
+  - kocaeli
+  - gebze
+  - sakarya
+  - eskişehir
+  - eskisehir
+  - konya
+  - antalya
+  - adana
+  - kayseri
+  - denizli
+  - tekirdağ
+  - tekirdag
+  - çorlu
+  - corlu
+  - remote turkey
+  - turkey remote
+  - remote türkiye
+  - remote turkiye
+  - hybrid turkey
+  - hibrit türkiye
+  - istanbul turkey
+  - ankara turkey
+  - izmir turkey
+  - türkiye remote
+  - turkiye remote
+  - sap turkiye
+  - sap türkiye
+  - kafein technology solutions
+  - rapsodo
+  - oredata
+  - sanction scanner
+  - commencis
+  - midas
+  - insider
+  - getmidas
+  - insiderone
+  location_reject:
+  - canada
+  - china
+  - chinese
+  - hong kong
+  - singapore
+  - india
+  - united states
+  - usa
+  - us remote
+  - united kingdom
+  - uk
+  - england
+  - london
+  - germany
+  - berlin
+  - netherlands
+  - amsterdam
+  - france
+  - paris
+  - spain
+  - madrid
+  - italy
+  - poland
+  - warsaw
+  - portugal
+  - lisbon
+  - romania
+  - bulgaria
+  - greece
+  - athens
+  - dubai
+  - uae
+  - qatar
+  - saudi
+  - australia
+  - new zealand
+  - brazil
+  - mexico
+  - latin america
+  - emea
+  - europe
+  - european union
+  - global remote
+  - worldwide
+  - remote worldwide
+  - remote europe
+  - canadian
+  - toronto
+  - vancouver
+  - shanghai
+  - beijing
+  role_required:
+  - junior
+  - jr
+  - jr.
+  - entry level
+  - entry-level
+  - başlangıç seviyesi
+  - baslangic seviyesi
+  - new grad
+  - new graduate
+  - fresh graduate
+  - recent graduate
+  - graduate program
+  - graduate developer
+  - graduate software engineer
+  - associate software engineer
+  - associate software developer
+  - associate backend engineer
+  - trainee
+  - software trainee
+  - engineering trainee
+  - developer intern
+  - software intern
+  - stajyer yazılım
+  - stajyer yazilim
+  - yeni mezun
+  - yetiştirilmek üzere
+  - yetistirilmek uzere
+  - uzman yardımcısı
+  - uzman yardimcisi
+  - asistan yazılım
+  - asistan yazilim
+  - uygulama destek
+  - application support
+  - software support
+  - yazılım destek
+  - yazilim destek
+  - teknik destek yazılım
+  - teknik destek yazilim
+  - technical support engineer
+  - support engineer
+  - software support engineer
+  - application support engineer
+  - it support
+  - sql destek
+  - erp destek
+  - entegrasyon destek
+  - integration support
+  - implementation support
+  - implementation engineer
+  - product support
+  - api support
+  - platform support
+  - 0 1 yıl
+  - 0 2 yıl
+  - 0 3 yıl
+  - 0 1 years
+  - 0 2 years
+  - 0 3 years
+  - yazılım geliştirici
+  - yazilim gelistirici
+  - yazılım destek uzmanı
+  - yazilim destek uzmani
+  - uygulama destek uzmanı
+  - uygulama destek uzmani
+  - erp destek uzmanı
+  - erp destek uzmani
+  - software developer
+  - software engineer
+  - java developer
+  - backend developer
+sources:
+- parser: hrpeak
+  company: Kafein Technology Solutions
+  url: https://kafein.hrpeak.com/ilan/site.aspx
+  enabled: true
+- parser: successfactors
+  name: successfactors_sap_turkiye
+  company: SAP Türkiye
+  url: https://jobs.sap.com/go/T%C3%BCrkiye/9054501/
+  enabled: true
+- parser: kariyer_net
+  name: kariyer_net_java_backend
+  url: https://www.kariyer.net/is-ilanlari?kw=java%20backend
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_spring_boot
+  url: https://www.kariyer.net/is-ilanlari?kw=spring%20boot
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_junior_java
+  url: https://www.kariyer.net/is-ilanlari?kw=junior%20java
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_junior_backend
+  url: https://www.kariyer.net/is-ilanlari?kw=junior%20backend
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_yeni_mezun_yazilim
+  url: https://www.kariyer.net/is-ilanlari?kw=yeni%20mezun%20yaz%C4%B1l%C4%B1m
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_yetistirilmek_uzere_yazilim
+  url: https://www.kariyer.net/is-ilanlari?kw=yeti%C5%9Ftirilmek%20%C3%BCzere%20yaz%C4%B1l%C4%B1m
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_yazilim_destek
+  url: https://www.kariyer.net/is-ilanlari?kw=yaz%C4%B1l%C4%B1m%20destek
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_uygulama_destek
+  url: https://www.kariyer.net/is-ilanlari?kw=uygulama%20destek
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_teknik_destek_yazilim
+  url: https://www.kariyer.net/is-ilanlari?kw=teknik%20destek%20yaz%C4%B1l%C4%B1m
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_sql_destek
+  url: https://www.kariyer.net/is-ilanlari?kw=sql%20destek
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_erp_destek
+  url: https://www.kariyer.net/is-ilanlari?kw=erp%20destek
+  enabled: false
+- parser: kariyer_net
+  name: kariyer_net_entegrasyon_destek
+  url: https://www.kariyer.net/is-ilanlari?kw=entegrasyon%20destek
+  enabled: false

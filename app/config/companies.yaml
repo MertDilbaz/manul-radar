@@ -1,0 +1,143 @@
+companies:
+- parser: workable
+  name: workable_rapsodo
+  company: Rapsodo
+  account: rapsodo
+  enabled: true
+- parser: workable
+  name: workable_oredata
+  company: OREDATA
+  account: oredata
+  enabled: true
+- parser: workable
+  name: workable_d_ploy
+  company: D-ploy
+  account: d-ploy
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: workable
+  name: workable_vertigo_games
+  company: Vertigo Games
+  account: vertigogames
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: workable
+  name: workable_sanction_scanner
+  company: Sanction Scanner
+  account: sanction-scanner
+  enabled: true
+- parser: greenhouse
+  name: greenhouse_fundraiseup
+  company: Fundraise Up
+  board_token: fundraiseup
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: greenhouse
+  name: greenhouse_6sense
+  company: 6sense
+  board_token: 6sense
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: greenhouse
+  name: greenhouse_duolingo
+  company: Duolingo
+  board_token: duolingo
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: greenhouse
+  name: greenhouse_onespan
+  company: OneSpan
+  board_token: onespan
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: greenhouse
+  name: greenhouse_whitetech
+  company: WhiteTech
+  board_token: whitetech
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: lever
+  name: lever_commencis
+  company: Commencis
+  company_slug: commencis
+  enabled: true
+- parser: lever
+  name: lever_midas
+  company: Midas
+  company_slug: getmidas
+  enabled: true
+- parser: lever
+  name: lever_insider
+  company: Insider
+  company_slug: insiderone
+  enabled: true
+- parser: lever
+  name: lever_jobgether
+  company: Jobgether
+  company_slug: jobgether
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: smartrecruiters
+  name: smartrecruiters_experian
+  company: Experian
+  company_slug: Experian
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: smartrecruiters
+  name: smartrecruiters_asos
+  company: ASOS
+  company_slug: ASOS
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: smartrecruiters
+  name: smartrecruiters_adaptavist
+  company: The Adaptavist Group
+  company_slug: TheAdaptavistGroup
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: smartrecruiters
+  name: smartrecruiters_jobs_for_humanity
+  company: Jobs for Humanity
+  company_slug: JobsForHumanity
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: teamtailor
+  name: teamtailor_montel
+  company: Montel
+  url: https://montel.teamtailor.com/jobs
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: teamtailor
+  name: teamtailor_tradingview
+  company: TradingView
+  url: https://tradingview.teamtailor.com/jobs
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: teamtailor
+  name: teamtailor_david_kennedy_recruitment
+  company: David Kennedy Recruitment
+  url: https://davidkennedyrecruitment.teamtailor.com/jobs?department_id=137746
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'
+- parser: teamtailor
+  name: teamtailor_crystal_intelligence
+  company: Crystal Intelligence
+  url: https://crystalintelligence.teamtailor.com/jobs
+  enabled: false
+  disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
+    Turkey-only junior/new-grad software and software-support roles.'

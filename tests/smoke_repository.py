@@ -64,13 +64,15 @@ class _TempDB:
 def _build_scorer():
     from app.filters.job_scorer import JobScorer
 
+    include = [
+        "java", "spring", "backend", "sql", "rest", "junior",
+        "new graduate", "application support", "erp", "integration",
+    ]
     return JobScorer(
-        include_keywords=[
-            "java", "spring", "backend", "sql", "rest", "junior",
-            "new graduate", "application support", "erp", "integration",
-        ],
+        include_keywords=include,
         exclude_keywords=["senior", "lead", "5+ years"],
         minimum_score=50,
+        domain_required_keywords=include,
     )
 
 

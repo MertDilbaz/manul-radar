@@ -1,40 +1,45 @@
 """Text normalization helpers for the filter pipeline.
 
-A single ``normalize_text`` utility is exposed so both the scorer and any
-future filter (regex-based, language-specific, etc.) share one definition
-of "what a comparable job text looks like".
-
-The rules are deliberately minimal:
-
-* ``None`` becomes an empty string so callers can pass optional ``Job``
-  fields (``location``, ``description``, ...) without branching.
-* The text is lower-cased so substring matching is case-insensitive.
-* Whitespace runs are collapsed to a single space so a keyword like
-  ``"new graduate"`` matches regardless of how the source formatted the
-  original line breaks or stray spaces.
-
-Turkish characters (``ş``, ``ç``, ``ğ``, ``ı``, ``ö``, ``ü``) are kept as
-``str.lower()`` Unicode-aware: no transliteration is applied, so
-``"Yazılım"`` and ``"yazılım"`` compare equal but ``"developer"`` will
-not match ``"yazılımcı"``. This is the V1 contract; transliteration can
-be added later without changing callers.
+The scorer compares Turkish and English job text coming from different
+sources. Sources may use Turkish characters, ASCII fallbacks,
+underscores in source names, or punctuation-heavy titles. This module
+normalizes those variants into one searchable form so config keywords
+such as ``yazilim destek`` can match both ``Yazılım Destek`` and
+``kariyer_net_yazilim_destek``.
 """
 from __future__ import annotations
 
+import re
+
+_TURKISH_TRANSLATION = str.maketrans(
+    {
+        "ç": "c",
+        "ğ": "g",
+        "ı": "i",
+        "ö": "o",
+        "ş": "s",
+        "ü": "u",
+        "Ç": "c",
+        "Ğ": "g",
+        "İ": "i",
+        "I": "i",
+        "Ö": "o",
+        "Ş": "s",
+        "Ü": "u",
+    }
+)
+_NON_WORD_RE = re.compile(r"[^a-z0-9+#.]+")
+_SPACE_RE = re.compile(r"\s+")
+
 
 def normalize_text(text: str | None) -> str:
-    """Return ``text`` in a canonical form for keyword matching.
-
-    Args:
-        text: Arbitrary user-supplied string, or ``None``.
-
-    Returns:
-        ``text`` lower-cased with internal whitespace runs collapsed to
-        a single space and edges stripped. ``None`` yields ``""``.
-    """
+    """Return ``text`` in a canonical form for keyword matching."""
     if text is None:
         return ""
-    return " ".join(text.lower().split())
+    normalized = str(text).translate(_TURKISH_TRANSLATION).lower()
+    normalized = normalized.replace("_", " ").replace("-", " ").replace("/", " ")
+    normalized = _NON_WORD_RE.sub(" ", normalized)
+    return _SPACE_RE.sub(" ", normalized).strip()
 
 
 __all__ = ["normalize_text"]

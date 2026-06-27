@@ -155,9 +155,16 @@ def _run_monitor_in_temp_env(
     ``sys.argv``) so existing callers don't need to change.
     """
     import requests
+    from app.sources.greenhouse_source import GreenhouseSource
     from app.sources.hrpeak_source import HrPeakSource
+    from app.sources.kariyer_net_source import KariyerNetSource
+    from app.sources.lever_source import LeverSource
+    from app.sources.smartrecruiters_source import SmartRecruitersSource
+    from app.sources.successfactors_source import SuccessFactorsSource
+    from app.sources.teamtailor_source import TeamtailorSource
+    from app.sources.workable_source import WorkableSource
 
-    env_overrides: dict[str, str] = {"JOB_DB_PATH": db_path}
+    env_overrides: dict[str, str] = {"JOB_DB_PATH": db_path, "MANUL_SKIP_DOTENV": "1"}
     if telegram_token is not None:
         env_overrides["TELEGRAM_BOT_TOKEN"] = telegram_token
     if chat_id is not None:
@@ -189,9 +196,16 @@ def _run_monitor_in_temp_env(
                     "fetch_jobs",
                     return_value=fetch_jobs_returns if fetch_jobs_returns is not None else _build_realistic_jobs(),
                 ):
-                    import run_monitor
+                    with mock.patch.object(KariyerNetSource, "fetch_jobs", return_value=[]):
+                        with mock.patch.object(SuccessFactorsSource, "fetch_jobs", return_value=[]):
+                            with mock.patch.object(WorkableSource, "fetch_jobs", return_value=[]):
+                                with mock.patch.object(GreenhouseSource, "fetch_jobs", return_value=[]):
+                                    with mock.patch.object(LeverSource, "fetch_jobs", return_value=[]):
+                                        with mock.patch.object(SmartRecruitersSource, "fetch_jobs", return_value=[]):
+                                            with mock.patch.object(TeamtailorSource, "fetch_jobs", return_value=[]):
+                                                import run_monitor
 
-                    exit_code = run_monitor.main()
+                                                exit_code = run_monitor.main()
 
     return exit_code, post
 
@@ -260,8 +274,8 @@ def _check_no_telegram_env_skips_sending() -> None:
             pass
 
 
-def _check_telegram_env_sends_one_per_relevant() -> None:
-    """With Telegram env, one send per relevant job."""
+def _check_telegram_env_sends_digest() -> None:
+    """With Telegram env, one digest send covers all relevant jobs."""
     db_path, tmp = _make_temp_db_path()
     try:
         exit_code, post = _run_monitor_in_temp_env(
@@ -282,7 +296,7 @@ def _check_telegram_env_sends_one_per_relevant() -> None:
             _record(
                 "WITH_ENV_CALLS",
                 False,
-                f"expected 2 send calls (junior + appsup), got {len(post.calls)}",
+                f"expected 2 digest page send calls, got {len(post.calls)}",
             )
             return
         # First call must target the canonical endpoint.
@@ -311,19 +325,25 @@ def _check_telegram_env_sends_one_per_relevant() -> None:
                 f"disable_web_page_preview missing/false: {payload.get('disable_web_page_preview')!r}",
             )
             return
-        # Text must mention Manul Sentinel and one of the job titles.
+        # Text must mention the digest banner and both relevant job titles.
         text = payload.get("text", "")
-        if "Manul Sentinel" not in text:
+        required = [
+            "Manul Sentinel",
+            "Uygun yeni ilan",
+            "Taranan ilan",
+        ]
+        missing = [fragment for fragment in required if fragment not in text]
+        if missing:
             _record(
                 "WITH_ENV_TEXT",
                 False,
-                f"text missing Manul Sentinel banner: {text!r}",
+                f"digest text missing {missing}: {text!r}",
             )
             return
         _record(
             "WITH_ENV",
             True,
-            f"2 send calls, endpoint OK, payload OK",
+            "2 digest page send calls, endpoint OK, payload OK",
         )
     finally:
         try:
@@ -332,11 +352,11 @@ def _check_telegram_env_sends_one_per_relevant() -> None:
             pass
 
 
-def _check_send_failure_does_not_abort_batch() -> None:
-    """If one send raises, subsequent jobs still get attempted."""
+def _check_digest_send_failure_returns_cleanly() -> None:
+    """If the digest send raises, the monitor logs it and exits cleanly."""
     db_path, tmp = _make_temp_db_path()
     try:
-        # Raise on the first call only; second call should still succeed.
+        # Raise on the first digest page call; remaining pages may still be attempted.
         post = _FakePost(raise_on_call=1)
         exit_code, _ = _run_monitor_in_temp_env(
             db_path=db_path,
@@ -355,15 +375,15 @@ def _check_send_failure_does_not_abort_batch() -> None:
             return
         if len(post.calls) != 2:
             _record(
-                "FAIL_BATCH_CALLS",
+                "FAIL_DIGEST_CALLS",
                 False,
-                f"expected both jobs attempted (2 calls), got {len(post.calls)}",
+                f"expected 2 digest send attempts, got {len(post.calls)}",
             )
             return
         _record(
-            "FAIL_BATCH",
+            "FAIL_DIGEST",
             True,
-            "1 send failed, 2nd still attempted, exit=0",
+            "digest send failed, failure logged, exit=0",
         )
     finally:
         try:
@@ -386,7 +406,8 @@ def _check_dedup_on_second_run() -> None:
         first_calls = len(post1.calls)
         first_db_rows = _count_rows(db_path)
 
-        # Second run with same DB — URLs already persisted -> 0 new.
+        # Second run with same DB — URLs already persisted -> 0 new;
+        # send_empty_report=true still sends one status message.
         _, post2 = _run_monitor_in_temp_env(
             db_path=db_path,
             telegram_token="FAKE_BOT_TOKEN",
@@ -398,14 +419,14 @@ def _check_dedup_on_second_run() -> None:
             _record(
                 "DEDUP_FIRST_CALLS",
                 False,
-                f"first run expected 2 sends, got {first_calls}",
+                f"first run expected 2 digest page sends, got {first_calls}",
             )
             return
-        if len(post2.calls) != 0:
+        if len(post2.calls) != 1:
             _record(
                 "DEDUP_SECOND_CALLS",
                 False,
-                f"second run expected 0 sends, got {len(post2.calls)}",
+                f"second run expected 1 empty-report send, got {len(post2.calls)}",
             )
             return
         if _count_rows(db_path) != first_db_rows:
@@ -418,7 +439,7 @@ def _check_dedup_on_second_run() -> None:
         _record(
             "DEDUP",
             True,
-            f"first run={first_calls} sends, second run=0 sends, rows stable",
+            f"first run={first_calls} digest sends, second run=1 empty-report send, rows stable",
         )
     finally:
         try:
@@ -552,20 +573,20 @@ def _check_use_dummy_source_routes_to_dummy() -> None:
                 f"expected exit 0, got {exit_code}",
             )
             return
-        # DummySource returns 3 jobs, 2 are relevant -> 2 send calls.
+        # DummySource returns 3 jobs, 2 are relevant -> summary + one page.
         # (Same contract as the realistic_jobs path, just routed via
         # DummySource.fetch_jobs instead of Kafein.)
         if len(post.calls) != 2:
             _record(
                 "USE_DUMMY_ROUTE_CALLS",
                 False,
-                f"expected 2 sends from dummy source, got {len(post.calls)}",
+                f"expected 2 digest page sends from dummy source, got {len(post.calls)}",
             )
             return
         _record(
             "USE_DUMMY_ROUTE",
             True,
-            "--use-dummy-source routes through DummySource -> 2 sends",
+            "--use-dummy-source routes through DummySource -> 2 digest page sends",
         )
     finally:
         try:
@@ -576,8 +597,8 @@ def _check_use_dummy_source_routes_to_dummy() -> None:
 
 def _check_use_dummy_source_dedup_on_second_run() -> None:
     """End-to-end: first run with --use-dummy-source on a fresh DB
-    produces 2 new relevant jobs and 2 sends; the same DB on a
-    second run produces 0 new and 0 sends.
+    produces 2 new relevant jobs and 2 digest page sends; the same DB on a
+    second run produces 0 new and 1 empty-report send.
 
     This is the spec's "İlk çalıştırmada 2 / ikinci çalıştırmada 0"
     guarantee, validated end-to-end (source swap + persist + send).
@@ -601,20 +622,20 @@ def _check_use_dummy_source_dedup_on_second_run() -> None:
             _record(
                 "USE_DUMMY_DEDUP_FIRST",
                 False,
-                f"first run expected 2 sends, got {len(post1.calls)}",
+                f"first run expected 2 digest page sends, got {len(post1.calls)}",
             )
             return
-        if len(post2.calls) != 0:
+        if len(post2.calls) != 1:
             _record(
                 "USE_DUMMY_DEDUP_SECOND",
                 False,
-                f"second run expected 0 sends, got {len(post2.calls)}",
+                f"second run expected 1 empty-report send, got {len(post2.calls)}",
             )
             return
         _record(
             "USE_DUMMY_DEDUP",
             True,
-            "first=2 sends, second=0 sends on same DB",
+            "first=2 digest page sends, second=1 empty-report send on same DB",
         )
     finally:
         try:
@@ -626,8 +647,8 @@ def _check_use_dummy_source_dedup_on_second_run() -> None:
 def main() -> int:
     _check_parse()
     _check_no_telegram_env_skips_sending()
-    _check_telegram_env_sends_one_per_relevant()
-    _check_send_failure_does_not_abort_batch()
+    _check_telegram_env_sends_digest()
+    _check_digest_send_failure_returns_cleanly()
     _check_dedup_on_second_run()
     _check_job_db_path_override_used()
     _check_use_dummy_source_flag_parses()

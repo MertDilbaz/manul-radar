@@ -135,7 +135,7 @@ def _check_normalize() -> None:
         (None, ""),
         ("", ""),
         ("  JAVA  Spring  ", "java spring"),
-        ("Yazılım Mühendisi", "yazılım mühendisi"),
+        ("Yazılım Mühendisi", "yazilim muhendisi"),
         ("Mixed\tWhitespace\nLines", "mixed whitespace lines"),
         ("already lower", "already lower"),
     ]
@@ -182,6 +182,7 @@ def _build_scorer(include, exclude, threshold=50, include_weight=20, exclude_wei
         minimum_score=threshold,
         include_weight=include_weight,
         exclude_weight=exclude_weight,
+        domain_required_keywords=include,
     )
 
 
@@ -519,7 +520,7 @@ def _check_service_isolates_source_failures() -> None:
     """A failing source must not stop the others from running."""
     from app.services.job_monitor_service import JobMonitorService
 
-    scorer = _build_scorer(include=["java", "spring"], exclude=[], threshold=0)
+    scorer = _build_scorer(include=["java", "spring", "backend"], exclude=[], threshold=0)
     service = JobMonitorService(
         sources=[_FlakySource(), _ExtraJobsSource()],
         scorer=scorer,

@@ -116,6 +116,7 @@ def _check_parse() -> None:
     try:
         from app.notifier.telegram_notifier import (  # noqa: F401
             TelegramNotifier,
+            format_job_digest_messages,
             format_scored_job_message,
         )
     except Exception as exc:
@@ -199,6 +200,41 @@ def _check_format_missing_url_safe() -> None:
         )
         return
     _record("FORMAT_URL_SAFE", True, "empty url -> placeholder")
+
+
+def _check_format_digest_message() -> None:
+    """Digest formatter must compact multiple jobs into a morning summary."""
+    from app.notifier.telegram_notifier import format_job_digest_messages
+
+    messages = format_job_digest_messages(
+        [_make_scored_job(), _make_scored_job(job=_make_job(title="Application Support Specialist"), score=80)],
+        greeting="Günaydın Mert, işte sana uygun yeni iş ilanları:",
+    )
+
+    if len(messages) != 2:
+        _record("DIGEST_COUNT", False, f"expected summary + 1 page, got {len(messages)}")
+        return
+
+    summary = messages[0]
+    page = messages[1]
+    expected_summary = [
+        "🐈 <b>Manul Sentinel</b>",
+        "Günaydın Mert",
+        "Uygun yeni ilan",
+    ]
+    expected_page = [
+        "İş İlanları",
+        "1) Junior Java Backend Developer",
+        "2) Application Support Specialist",
+        "SpringyCorp",
+        "Skor:",
+        "İlanı Aç",
+    ]
+    missing = [f for f in expected_summary if f not in summary] + [f for f in expected_page if f not in page]
+    if missing:
+        _record("DIGEST_FIELDS", False, f"missing fragments: {missing}; messages={messages!r}")
+        return
+    _record("DIGEST", True, "2 jobs -> summary + 1 page")
 
 
 def _check_send_message_calls_post_with_expected_args() -> None:
@@ -346,6 +382,7 @@ def main() -> int:
     _check_format_full_fields()
     _check_format_empty_matche_keywords()
     _check_format_missing_url_safe()
+    _check_format_digest_message()
     _check_send_message_calls_post_with_expected_args()
     _check_send_message_ok_false_raises_runtime_error()
     _check_send_message_missing_ok_field_raises()

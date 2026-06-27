@@ -1,23 +1,36 @@
-# --- Python ---
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 
-# --- Local config / secrets ---
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets
 .env
-*.local.yaml
+.env.*
+!.env.example
 
-# --- Runtime artifacts ---
+# Runtime state
+data/
 logs/
-data/*.db
-data/*.sqlite
-data/*.sqlite3
+*.log
 
-# --- OS junk ---
+# OS / editor
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/

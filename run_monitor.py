@@ -31,10 +31,12 @@ This makes the script safe to invoke from CI smoke checks where no
 real Telegram token is wired in.
 
 Sources are read from ``config.sources``. The current contract
-recognises one parser kind — ``hrpeak`` — and instantiates one
-``HrPeakSource`` per enabled entry. New parsers (successfactors,
-workable, greenhouse, ...) will plug into the same dispatch in
-``_build_sources_from_config``.
+recognises multiple parser kinds — ``hrpeak``, ``successfactors``,
+``workable``, ``greenhouse``, ``lever``, ``smartrecruiters``,
+``teamtailor`` and ``kariyer_net`` —
+and instantiates one source object per enabled entry. New parsers
+(successfactors, workable, greenhouse, ...) will plug into the
+same dispatch in ``_build_sources_from_config``.
 
 The SQLite database path can be overridden with the ``JOB_DB_PATH``
 environment variable (default: ``data/jobs.db``). The smoke test
@@ -46,17 +48,26 @@ from __future__ import annotations
 import argparse
 import os
 
-from app.config.config_loader import load_config
+from app.config.config_loader import load_config, load_optional_config
+from app.config.env_loader import load_env
 from app.database.job_repository import JobRepository
 from app.filters.job_scorer import JobScorer
 from app.notifier.telegram_notifier import (
     TelegramNotifier,
+    format_job_digest_page_messages,
     format_scored_job_message,
 )
 from app.services.job_monitor_service import JobMonitorService
 from app.sources.base_source import BaseSource
 from app.sources.dummy_source import DummySource
+from app.sources.greenhouse_source import GreenhouseSource
 from app.sources.hrpeak_source import HrPeakSource
+from app.sources.kariyer_net_source import KariyerNetSource
+from app.sources.lever_source import LeverSource
+from app.sources.smartrecruiters_source import SmartRecruitersSource
+from app.sources.successfactors_source import SuccessFactorsSource
+from app.sources.teamtailor_source import TeamtailorSource
+from app.sources.workable_source import WorkableSource
 from app.utils.logger import logger, setup_logging
 
 
@@ -76,9 +87,26 @@ def _build_scorer(config: dict) -> JobScorer:
 
     include = list(keywords_cfg.get("include") or [])
     exclude = list(keywords_cfg.get("exclude") or [])
+    hard_exclude = list(keywords_cfg.get("hard_exclude") or [])
+    domain_required = list(keywords_cfg.get("domain_required") or [])
+    non_target_domain = list(keywords_cfg.get("non_target_domain") or [])
+    source_boost = list(keywords_cfg.get("source_boost") or [])
+    location_required = list(keywords_cfg.get("location_required") or [])
+    location_reject = list(keywords_cfg.get("location_reject") or [])
+    role_required = list(keywords_cfg.get("role_required") or [])
     minimum_score = int(scoring_cfg.get("minimum_score", 0))
     include_weight = int(scoring_cfg.get("include_weight", 20))
     exclude_weight = int(scoring_cfg.get("exclude_weight", 40))
+    source_boost_weight = int(scoring_cfg.get("source_boost_weight", 8))
+    hard_exclude_experience_years_raw = scoring_cfg.get(
+        "hard_exclude_experience_years",
+        4,
+    )
+    hard_exclude_experience_years = (
+        int(hard_exclude_experience_years_raw)
+        if hard_exclude_experience_years_raw is not None
+        else None
+    )
 
     return JobScorer(
         include_keywords=include,
@@ -86,6 +114,15 @@ def _build_scorer(config: dict) -> JobScorer:
         minimum_score=minimum_score,
         include_weight=include_weight,
         exclude_weight=exclude_weight,
+        hard_exclude_keywords=hard_exclude,
+        hard_exclude_experience_years=hard_exclude_experience_years,
+        domain_required_keywords=domain_required,
+        non_target_domain_keywords=non_target_domain,
+        source_boost_keywords=source_boost,
+        source_boost_weight=source_boost_weight,
+        location_required_keywords=location_required,
+        location_reject_keywords=location_reject,
+        role_required_keywords=role_required,
     )
 
 
@@ -197,8 +234,12 @@ def run_test_telegram() -> int:
     notification path will also work.
     """
     setup_logging()
+    env_loaded = load_env()
 
     logger.info("Manul Sentinel telegram test starting...")
+    logger.info(
+        "Local .env loaded." if env_loaded else "No local .env loaded; using process environment only."
+    )
 
     try:
         config = load_config()
@@ -219,19 +260,12 @@ def run_test_telegram() -> int:
 
 
 def _build_sources_from_config(config: dict) -> list[BaseSource]:
-    """Instantiate a list of sources from ``config.sources``.
+    """Instantiate source objects from config.yaml + optional companies.yaml.
 
-    V0.2 dispatch: only ``parser: hrpeak`` is recognised today; any
-    entry whose ``parser`` key is not a known value is logged and
-    skipped so a future unknown parser does not abort the run.
-    ``enabled: false`` entries are also skipped. Entries missing
-    required keys (``company``, ``url``) are logged and skipped
-    so a partial config cannot take the service down with a
-    confusing constructor error.
-
-    Adding a new parser means: add an ``elif`` arm here that imports
-    + constructs the parser, and document the new schema in
-    ``config.yaml``. No other code in this file needs to change.
+    ``config.sources`` remains supported for backward compatibility. The new
+    ``app/config/companies.yaml`` file can also define a ``companies`` list
+    using the same fields; this lets the project scale to many company boards
+    without turning the main runtime config into a huge source registry.
     """
     raw_sources = config.get("sources") or []
     if not isinstance(raw_sources, list):
@@ -239,64 +273,161 @@ def _build_sources_from_config(config: dict) -> list[BaseSource]:
             "config.sources is not a list; treating as empty "
             f"(got {type(raw_sources).__name__})."
         )
-        return []
+        raw_sources = []
+
+    companies_config = load_optional_config()
+    raw_companies = companies_config.get("companies") or []
+    if not isinstance(raw_companies, list):
+        logger.warning(
+            "companies.yaml companies is not a list; treating as empty "
+            f"(got {type(raw_companies).__name__})."
+        )
+        raw_companies = []
+
+    combined_entries: list[dict] = []
+    for entry in raw_sources:
+        if isinstance(entry, dict):
+            combined_entries.append(entry)
+        else:
+            logger.warning("config.sources contains a non-mapping entry; skipping.")
+    for entry in raw_companies:
+        if isinstance(entry, dict):
+            merged = dict(entry)
+            merged.setdefault("enabled", True)
+            combined_entries.append(merged)
+        else:
+            logger.warning("companies.yaml contains a non-mapping entry; skipping.")
 
     built: list[BaseSource] = []
-    for index, entry in enumerate(raw_sources):
-        if not isinstance(entry, dict):
-            logger.warning(
-                f"sources[{index}] is not a mapping; skipping."
-            )
-            continue
+    for index, entry in enumerate(combined_entries):
         if not entry.get("enabled", True):
-            logger.info(
-                f"sources[{index}] disabled by config; skipping."
-            )
+            logger.info(f"sources[{index}] disabled by config; skipping.")
             continue
 
         parser = str(entry.get("parser") or "").strip().lower()
+        company = str(entry.get("company") or "").strip()
+        name = str(entry.get("name") or "").strip()
+        url = str(entry.get("url") or entry.get("careers_url") or "").strip()
+
         if not parser:
-            logger.warning(
-                f"sources[{index}] has no 'parser' key; skipping."
-            )
+            logger.warning(f"sources[{index}] has no 'parser' key; skipping.")
             continue
 
-        if parser == "hrpeak":
-            company = str(entry.get("company") or "").strip()
-            url = str(entry.get("url") or "").strip()
-            if not company or not url:
-                logger.warning(
-                    f"hrpeak source at index {index} missing "
-                    "'company' or 'url'; skipping."
-                )
-                continue
-            try:
+        try:
+            if parser == "hrpeak":
+                if not company or not url:
+                    raise ValueError("hrpeak requires company and url")
+                built.append(HrPeakSource(company_name=company, careers_url=url))
+                logger.info(f"Registered source: hrpeak / {company} -> {url}")
+
+            elif parser == "successfactors":
+                if not company or not url:
+                    raise ValueError("successfactors requires company and url")
                 built.append(
-                    HrPeakSource(company_name=company, careers_url=url)
+                    SuccessFactorsSource(
+                        company_name=company,
+                        careers_url=url,
+                        source_name=name or None,
+                    )
                 )
-            except ValueError as exc:
+                logger.info(f"Registered source: successfactors / {company} -> {url}")
+
+            elif parser == "workable":
+                account = str(entry.get("account") or entry.get("slug") or "").strip()
+                if not company or not (account or url):
+                    raise ValueError("workable requires company and account or url")
+                built.append(
+                    WorkableSource(
+                        company_name=company,
+                        account=account or None,
+                        careers_url=url or None,
+                        source_name=name or None,
+                    )
+                )
+                logger.info(f"Registered source: workable / {company} -> {url or account}")
+
+            elif parser == "greenhouse":
+                board_token = str(entry.get("board_token") or entry.get("token") or entry.get("slug") or "").strip()
+                if not company or not board_token:
+                    raise ValueError("greenhouse requires company and board_token")
+                built.append(
+                    GreenhouseSource(
+                        company_name=company,
+                        board_token=board_token,
+                        source_name=name or None,
+                    )
+                )
+                logger.info(f"Registered source: greenhouse / {company} -> {board_token}")
+
+            elif parser == "lever":
+                company_slug = str(entry.get("company_slug") or entry.get("slug") or "").strip()
+                if not company or not company_slug:
+                    raise ValueError("lever requires company and company_slug")
+                built.append(
+                    LeverSource(
+                        company_name=company,
+                        company_slug=company_slug,
+                        source_name=name or None,
+                    )
+                )
+                logger.info(f"Registered source: lever / {company} -> {company_slug}")
+
+            elif parser == "smartrecruiters":
+                company_slug = str(entry.get("company_slug") or entry.get("slug") or "").strip()
+                if not company or not company_slug:
+                    raise ValueError("smartrecruiters requires company and company_slug")
+                built.append(
+                    SmartRecruitersSource(
+                        company_name=company,
+                        company_slug=company_slug,
+                        careers_url=url or None,
+                        source_name=name or None,
+                    )
+                )
+                logger.info(f"Registered source: smartrecruiters / {company} -> {url or company_slug}")
+
+            elif parser == "teamtailor":
+                if not company or not url:
+                    raise ValueError("teamtailor requires company and url")
+                built.append(
+                    TeamtailorSource(
+                        company_name=company,
+                        careers_url=url,
+                        source_name=name or None,
+                    )
+                )
+                logger.info(f"Registered source: teamtailor / {company} -> {url}")
+
+            elif parser == "kariyer_net":
+                if not url:
+                    raise ValueError("kariyer_net requires url")
+                built.append(
+                    KariyerNetSource(
+                        search_url=url,
+                        source_name=name or "kariyer_net",
+                    )
+                )
+                logger.info(
+                    f"Registered source: kariyer_net (name={name or 'kariyer_net'}) -> {url}"
+                )
+
+            else:
                 logger.warning(
-                    f"hrpeak source at index {index} rejected: {exc}"
+                    f"Unknown parser {parser!r} at sources[{index}]; skipping. "
+                    "Supported: hrpeak, successfactors, workable, greenhouse, "
+                    "lever, smartrecruiters, teamtailor, kariyer_net."
                 )
-                continue
-            logger.info(
-                f"Registered source: hrpeak / {company} -> {url}"
-            )
-        else:
-            logger.warning(
-                f"Unknown parser {parser!r} at sources[{index}]; "
-                "skipping. (Only 'hrpeak' is supported in this build.)"
-            )
+        except ValueError as exc:
+            logger.warning(f"{parser} source at index {index} rejected: {exc}")
+            continue
 
     if not built:
         logger.error(
-            "No usable sources in config.sources. Add at least one "
-            "entry with parser='hrpeak' and enabled=true."
+            "No usable sources in config/companies. Add at least one enabled source."
         )
         raise SystemExit(1)
 
     return built
-
 
 def _parse_args() -> argparse.Namespace:
     """Parse CLI flags.
@@ -346,8 +477,12 @@ def main() -> int:
         return run_test_telegram()
 
     setup_logging()
+    env_loaded = load_env()
 
     logger.info("Manul Sentinel real monitor starting...")
+    logger.info(
+        "Local .env loaded." if env_loaded else "No local .env loaded; using process environment only."
+    )
 
     try:
         config = load_config()
@@ -373,10 +508,17 @@ def main() -> int:
         else _build_sources_from_config(config)
     )
 
+    scoring_cfg = config.get("scoring") or {}
+    try:
+        debug_rejected_limit = int(scoring_cfg.get("debug_top_rejected", 20))
+    except (TypeError, ValueError):
+        debug_rejected_limit = 20
+
     service = JobMonitorService(
         sources=sources,
         scorer=scorer,
         repository=repository,
+        debug_rejected_limit=debug_rejected_limit,
     )
     new_relevant = service.run()
 
@@ -384,25 +526,80 @@ def main() -> int:
         f"Workflow produced {len(new_relevant)} new relevant job(s)."
     )
 
-    sent = 0
-    failed = 0
     for scored in new_relevant:
         logger.info(
             f"  - [{scored.job.source}] {scored.job.title} @ "
             f"{scored.job.company} | score={scored.score}"
         )
-        if notifier is None:
-            continue
-        try:
-            message = format_scored_job_message(scored)
-            notifier.send_message(message)
-            sent += 1
-            logger.info("    -> Telegram message sent.")
-        except Exception as exc:  # noqa: BLE001 — one bad send must not abort the batch
-            failed += 1
-            logger.error(
-                f"    -> Telegram send failed for {scored.job.url}: {exc}"
+
+    sent = 0
+    failed = 0
+    if notifier is not None:
+        notification_cfg = config.get("notification") or {}
+        mode = str(notification_cfg.get("mode") or "digest_pages").strip().lower()
+
+        if mode == "single":
+            # Legacy mode: one Telegram message per job. Kept as an
+            # escape hatch, but the default is digest_pages to avoid spam.
+            for scored in new_relevant:
+                try:
+                    message = format_scored_job_message(scored)
+                    notifier.send_message(message)
+                    sent += 1
+                    logger.info("    -> Telegram single-job message sent.")
+                except Exception as exc:  # noqa: BLE001 — one bad send must not abort the batch
+                    failed += 1
+                    logger.error(
+                        f"    -> Telegram send failed for {scored.job.url}: {exc}"
+                    )
+        else:
+            greeting = str(
+                notification_cfg.get("greeting")
+                or "Günaydın Mert, işte sana uygun yeni iş ilanları:"
             )
+            empty_message = str(
+                notification_cfg.get("empty_message")
+                or "Günaydın Mert. Bugün filtrelerine uygun yeni iş ilanı bulamadım."
+            )
+            send_empty_report = bool(notification_cfg.get("send_empty_report", True))
+
+            def _cfg_int(key: str, default: int) -> int:
+                try:
+                    return int(notification_cfg.get(key, default))
+                except (TypeError, ValueError):
+                    return default
+
+            max_jobs = _cfg_int("max_jobs_in_digest", 12)
+            safe_char_limit = _cfg_int("safe_char_limit", 3800)
+            jobs_per_page = _cfg_int("jobs_per_page", 4)
+            max_pages = _cfg_int("max_pages", 3)
+
+            messages = format_job_digest_page_messages(
+                new_relevant,
+                greeting=greeting,
+                jobs_per_page=jobs_per_page,
+                max_pages=max_pages,
+                max_jobs=max_jobs,
+                safe_char_limit=safe_char_limit,
+                stats=service.last_run_stats,
+                empty_message=empty_message,
+                send_empty_report=send_empty_report,
+            )
+
+            for index, message in enumerate(messages, start=1):
+                try:
+                    notifier.send_message(message, parse_mode="HTML")
+                    sent += 1
+                    logger.info(
+                        f"    -> Telegram digest page sent "
+                        f"({index}/{len(messages)})."
+                    )
+                except Exception as exc:  # noqa: BLE001 — one bad send must not abort the batch
+                    failed += 1
+                    logger.error(
+                        f"    -> Telegram digest page send failed "
+                        f"({index}/{len(messages)}): {exc}"
+                    )
 
     logger.info(
         f"Monitoring run complete. {sent} sent, {failed} failed."
