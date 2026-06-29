@@ -19,8 +19,16 @@ env/
 .env.*
 !.env.example
 
-# Runtime state
-data/
+# Runtime state / local database
+data/jobs.db
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite3
+data/*.backup-*
+data/jobs.db.backup-*
+
+# Logs
 logs/
 *.log
 
