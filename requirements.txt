@@ -3,3 +3,8 @@ PyYAML==6.0.3
 beautifulsoup4==4.15.0
 requests==2.34.2
 python-dotenv>=1.0.1,<2.0.0
+# Playwright is required for kariyer_net_pw (Cloudflare bypass).
+# It is optional for the basic sources — the non-Playwright parsers
+# (linkedin, remotive, python_jobs, greenhouse, lever, etc.) work
+# without it. CI installs it explicitly for the full run.
+playwright>=1.40
