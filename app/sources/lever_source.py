@@ -1,9 +1,8 @@
 """Lever public postings API source."""
 from __future__ import annotations
 
-import requests
 
-from app.sources.ats_helpers import JSON_HEADERS, REQUEST_TIMEOUT, clean_text, html_to_text, make_job, source_slug, utc_now_iso
+from app.sources.ats_helpers import fetch_with_retry, JSON_HEADERS, REQUEST_TIMEOUT, clean_text, html_to_text, make_job, source_slug, utc_now_iso
 from app.sources.base_source import BaseSource
 from app.models.job import Job
 from app.utils.logger import logger
@@ -30,7 +29,7 @@ class LeverSource(BaseSource):
         self.api_url = f"https://api.lever.co/v0/postings/{self.company_slug}?mode=json"
 
     def fetch_jobs(self) -> list[Job]:
-        response = requests.get(self.api_url, timeout=self.timeout, headers=JSON_HEADERS)
+        response = fetch_with_retry(self.api_url, timeout=self.timeout, headers=JSON_HEADERS)
         response.raise_for_status()
         data = response.json()
         raw_jobs = data if isinstance(data, list) else []

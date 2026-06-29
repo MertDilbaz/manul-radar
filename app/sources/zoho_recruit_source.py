@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -45,6 +44,8 @@ from app.sources.ats_helpers import (
     DEFAULT_HEADERS,
     REQUEST_TIMEOUT,
     clean_text,
+    utc_now_iso,
+    fetch_with_retry,
 )
 from app.utils.logger import logger
 
@@ -211,7 +212,7 @@ class ZohoRecruitSource(BaseSource):
         authenticated API endpoint we can't call.
         """
         try:
-            response = requests.get(
+            response = fetch_with_retry(
                 self.careers_url,
                 timeout=self.timeout,
                 headers={**DEFAULT_HEADERS, "User-Agent": _USER_AGENT},
@@ -276,7 +277,7 @@ class ZohoRecruitSource(BaseSource):
     ) -> list[Job]:
         seen_urls: set[str] = set()
         jobs: list[Job] = []
-        discovered_at = datetime.utcnow().isoformat()
+        discovered_at = utc_now_iso()
 
         for anchor in soup.find_all("a", href=True):
             if not isinstance(anchor, Tag):
@@ -319,7 +320,7 @@ class ZohoRecruitSource(BaseSource):
         """
         jobs: list[Job] = []
         seen_ids: set[str] = set()
-        discovered_at = datetime.utcnow().isoformat()
+        discovered_at = utc_now_iso()
 
         for match in _INLINE_JOB_RE.finditer(html):
             job_id = match.group(1)

@@ -12,7 +12,7 @@ during local bootstrap without external dependencies.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from app.sources.ats_helpers import utc_now_iso
 
 from app.models.job import Job
 from app.sources.base_source import BaseSource
@@ -25,7 +25,7 @@ class DummySource(BaseSource):
 
     def fetch_jobs(self) -> list[Job]:
         """Return three hard-coded jobs spanning the filter scenarios."""
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         return [
             Job(

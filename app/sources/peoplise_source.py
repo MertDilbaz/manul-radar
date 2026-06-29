@@ -29,6 +29,8 @@ from app.sources.ats_helpers import (
     DEFAULT_HEADERS,
     REQUEST_TIMEOUT,
     clean_text,
+    utc_now_iso,
+    fetch_with_retry,
 )
 from app.utils.logger import logger
 
@@ -140,7 +142,7 @@ class PeopliseSource(BaseSource):
 
     def fetch_jobs(self) -> list[Job]:
         """GET the page and parse it into ``Job`` instances."""
-        response = requests.get(
+        response = fetch_with_retry(
             self.careers_url,
             timeout=self.timeout,
             headers={**DEFAULT_HEADERS, "User-Agent": _USER_AGENT},
@@ -178,8 +180,7 @@ class PeopliseSource(BaseSource):
     def _extract_jobs_from_soup(self, soup: BeautifulSoup) -> list[Job]:
         seen_urls: set[str] = set()
         jobs: list[Job] = []
-        from datetime import datetime  # local import keeps the module cheap
-        discovered_at = datetime.utcnow().isoformat()
+        discovered_at = utc_now_iso()
 
         for anchor in soup.find_all("a", href=True):
             if not isinstance(anchor, Tag):

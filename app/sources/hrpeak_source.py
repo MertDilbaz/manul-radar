@@ -44,6 +44,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.models.job import Job
+from app.sources.ats_helpers import fetch_with_retry, source_slug, utc_now_iso
 from app.sources.base_source import BaseSource
 from app.utils.logger import logger
 
@@ -145,36 +146,7 @@ class HrPeakSource(BaseSource):
             )
         self.company_name = company_name
         self.careers_url = careers_url
-        self.name = source_name or self._derive_source_name(company_name)
-
-    @staticmethod
-    def _derive_source_name(company_name: str) -> str:
-        """Turn a company name into a stable, log-friendly source id.
-
-        Examples::
-
-            "Kafein Technology Solutions" -> "kafein_technology_solutions"
-            "Foo-Bar.co" -> "foo_bar_co"
-
-        The transformation is intentionally simple: lowercase,
-        alphanumerics kept, the rest become underscores, and
-        leading / trailing underscores are stripped. It does not
-        need to be unique across companies — the source list is
-        configured by the operator, and per-company name clashes
-        would be a config bug to surface, not to paper over.
-        """
-        lowered = company_name.lower()
-        cleaned: list[str] = []
-        prev_underscore = False
-        for ch in lowered:
-            if ch.isalnum():
-                cleaned.append(ch)
-                prev_underscore = False
-            else:
-                if not prev_underscore:
-                    cleaned.append("_")
-                    prev_underscore = True
-        return "".join(cleaned).strip("_")
+        self.name = source_name or source_slug("hrpeak", company_name)
 
     def fetch_jobs(self) -> list[Job]:
         """GET the page and parse it into a list of ``Job`` instances.
@@ -185,7 +157,7 @@ class HrPeakSource(BaseSource):
                 these at the source boundary.
         """
         headers = {"User-Agent": _USER_AGENT}
-        response = requests.get(
+        response = fetch_with_retry(
             self.careers_url,
             timeout=REQUEST_TIMEOUT,
             headers=headers,
@@ -232,7 +204,7 @@ class HrPeakSource(BaseSource):
         """Walk every anchor and emit a ``Job`` for those that look like listings."""
         seen_urls: set[str] = set()
         jobs: list[Job] = []
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         for anchor in soup.find_all("a"):
             href = (anchor.get("href") or "").strip()

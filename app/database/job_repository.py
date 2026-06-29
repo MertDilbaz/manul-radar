@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.models.job import Job
@@ -134,7 +134,7 @@ class JobRepository:
         self._ensure_init()
 
         job = scored_job.job
-        first_seen_at = datetime.utcnow().isoformat()
+        first_seen_at = datetime.now(timezone.utc).isoformat()
 
         params = (
             job.title,

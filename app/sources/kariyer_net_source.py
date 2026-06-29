@@ -83,7 +83,7 @@ Dedup:
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from app.sources.ats_helpers import fetch_with_retry, utc_now_iso
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -345,7 +345,7 @@ class KariyerNetSource(BaseSource):
                 these at the source boundary.
         """
         headers = {"User-Agent": _USER_AGENT}
-        response = requests.get(
+        response = fetch_with_retry(
             self.search_url,
             timeout=REQUEST_TIMEOUT,
             headers=headers,
@@ -406,7 +406,7 @@ class KariyerNetSource(BaseSource):
         """
         seen_urls: set[str] = set()
         jobs: list[Job] = []
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         for anchor in soup.find_all("a"):
             href = (anchor.get("href") or "").strip()

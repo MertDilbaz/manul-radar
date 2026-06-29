@@ -4,10 +4,9 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
-import requests
 from bs4 import BeautifulSoup, Tag
 
-from app.sources.ats_helpers import DEFAULT_HEADERS, REQUEST_TIMEOUT, absolute_url, clean_text, make_job, source_slug, utc_now_iso
+from app.sources.ats_helpers import fetch_with_retry, DEFAULT_HEADERS, REQUEST_TIMEOUT, absolute_url, clean_text, make_job, source_slug, utc_now_iso
 from app.sources.base_source import BaseSource
 from app.models.job import Job
 from app.utils.logger import logger
@@ -35,7 +34,7 @@ class TeamtailorSource(BaseSource):
         self.name = source_name or source_slug("teamtailor", company_name)
 
     def fetch_jobs(self) -> list[Job]:
-        response = requests.get(self.careers_url, timeout=self.timeout, headers=DEFAULT_HEADERS)
+        response = fetch_with_retry(self.careers_url, timeout=self.timeout, headers=DEFAULT_HEADERS)
         response.raise_for_status()
         return self._parse_jobs(response.text)
 
