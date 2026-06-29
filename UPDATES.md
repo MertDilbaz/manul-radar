@@ -4,6 +4,55 @@ Bu dosya session bazlı özet tutar. Her büyük değişiklik turundan sonra gü
 
 ---
 
+## 2026-06-29 — Production runner crash: `source_name` caller/callee mismatch
+
+**Sorun:** Mert GH Actions'ta `workflow_dispatch` ile bir run tetikledi ve aşağıdaki hatayı aldı:
+
+```
+File "/home/runner/work/manul-radar/manul-radar/run_monitor.py", line 423, in _build_sources_from_config
+    SuccessFactorsSource(
+TypeError: SuccessFactorsSource.__init__() got an unexpected keyword argument 'source_name'
+Error: Process completed with exit code 1.
+```
+
+**Kök neden:** `run_monitor._build_sources_from_config` dispatch helper'ı `SuccessFactorsSource`'a `source_name=name or None` geçiriyordu ama `SuccessFactorsSource.__init__` bu parametreyi kabul etmiyordu. Aynı tutarsızlık **5 parser** için geçerliydi:
+
+- ❌ `HrPeakSource` — `source_name` kabul etmiyor
+- ❌ `SuccessFactorsSource` — `source_name` kabul etmiyor (GH Actions hatası bu)
+- ❌ `PeopliseSource` — `source_name` kabul etmiyor
+- ❌ `HirexSource` — `source_name` kabul etmiyor
+- ❌ `ZohoRecruitSource` — `source_name` kabul etmiyor
+- ✅ `WorkableSource` / `GreenhouseSource` / `LeverSource` / `SmartRecruitersSource` / `TeamtailorSource` / `KariyerNetSource` — kabul ediyor
+
+Neden smoke testler bunu yakalamadı? `tests/smoke_run_monitor.py` ve `tests/smoke_ats_sources.py` parser constructor'larını `mock.patch.object(SourceClass, "fetch_jobs", ...)` ile **monkeypatch'liyordu** — gerçek `__init__` çağrılmıyordu, gerçek kwarg seti test edilmiyordu. Tutarsızlık commit'ten production'a kadar görünmeden geçti.
+
+**Çözüm — 3 katmanlı fix:**
+
+1. **5 parser'a `source_name` parametresi eklendi** (geriye dönük uyumlu, `None` default'lu):
+   - `app/sources/hrpeak_source.py`: `self.name = source_name or self._derive_source_name(company_name)`
+   - `app/sources/successfactors_source.py`: `self.name = source_name or self._build_source_name(company_name)`
+   - `app/sources/peoplise_source.py`: `self.name = source_name or f"peoplise_{self.account}"`
+   - `app/sources/hirex_source.py`: `self.name = source_name or f"hirex_{self.slug}"`
+   - `app/sources/zoho_recruit_source.py`: `self.name = source_name or ...` (early return ile branch temiz)
+
+2. **`run_monitor.py` `_build_sources_from_config`** — `HrPeakSource` satırı da artık `source_name=name or None` geçiriyor (tutarlı dispatch).
+
+3. **2 yeni savunma katmanı eklendi:**
+   - `tests/smoke_source_name_contract.py` — 11 parser × 2 test = **22 assertion**: her parser `source_name` kabul ediyor mu + default name non-empty mi? Mock yok, gerçek `__init__` çağrılıyor.
+   - `scripts/check_sources_construct.py` — lokal'de gerçek `config.sources` + `companies.yaml` ile dispatch helper'ı çalıştırıyor, 12 source'un hepsi kuruluyor mu? Network'suz, sadece constructor kurma.
+
+**Doğrulama:**
+
+- `python tests/smoke_source_name_contract.py` → `ALL_SOURCE_NAME_CONTRACT_OK` (22 OK)
+- `python scripts/check_sources_construct.py` → `SOURCES_CONSTRUCT_OK count=12`
+- Tüm diğer smoke testler (smoke_ats_sources, smoke_run_monitor_guards, smoke_run_monitor, smoke_job_scorer_policy, smoke_telegram_notifier, smoke_scoring_v2) **regresyon yok** (toplam **110 OK / 0 FAIL**).
+
+**Ders (memory'ye kaydedildi):** Dispatch helper her parser'a aynı kwarg geciriyorsa, o kwarg'i kabul etmeyen parser'lara da ekle (tutarli API). Smoke testlerin constructor'ları mock'lamasi, gercek kwarg setini gizler; bir "constructor contract" smoke test ekle. Mock'lu birim testleri yeterli degil — gercek config ile bir dispatch helper sanity check de yap.
+
+**Sonraki adım:** Production'da bir kez daha `workflow_dispatch` run tetikle. Şimdi düzgün çalışmalı — 12 source kurulacak, yeni V2 scoring junior+java+SQL'i **🟢 yüksek**, generic SE / AI SE / iOS-Android'i **🔴 düşük** etiketiyle gönderecek.
+
+---
+
 ## 2026-06-29 — Scoring V2: tiered weights + confidence + exclusive buckets
 
 **Sorun:** Mert production run'da 5 ilan "uygun" olarak Telegram'a geldi:

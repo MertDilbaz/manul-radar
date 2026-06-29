@@ -106,6 +106,7 @@ class PeopliseSource(BaseSource):
         company_name: str,
         careers_url: str,
         account: str | None = None,
+        source_name: str | None = None,
         timeout: int = REQUEST_TIMEOUT,
     ) -> None:
         if not company_name:
@@ -124,7 +125,7 @@ class PeopliseSource(BaseSource):
                 "PeopliseSource could not derive account from "
                 f"careers_url={careers_url!r}; pass account= explicitly."
             )
-        self.name = f"peoplise_{self.account}"
+        self.name = source_name or f"peoplise_{self.account}"
 
     @staticmethod
     def _account_from_url(url: str) -> str:

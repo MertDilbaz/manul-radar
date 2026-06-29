@@ -115,13 +115,25 @@ class HrPeakSource(BaseSource):
     careers_url: str = ""
     company_name: str = ""
 
-    def __init__(self, company_name: str, careers_url: str) -> None:
+    def __init__(
+        self,
+        company_name: str,
+        careers_url: str,
+        source_name: str | None = None,
+    ) -> None:
         """Store the company name and careers URL.
 
-        Both are required; we do not silently fall back to a
-        default because that would re-introduce the hardcoded
-        "Kafein Technology Solutions" coupling the V0.2 refactor
-        exists to remove.
+        Both ``company_name`` and ``careers_url`` are required; we do
+        not silently fall back to a default because that would
+        re-introduce the hardcoded "Kafein Technology Solutions"
+        coupling the V0.2 refactor exists to remove.
+
+        ``source_name`` is optional: when supplied, it overrides the
+        derived slug (``hrpeak_<company_slug>``) so a config can pin
+        the ``name`` attribute to a stable id (e.g. ``"kafein_technology_solutions"``)
+        even if the company field is later renamed. When ``None``,
+        the derived name is used so existing callers do not need to
+        pass anything.
         """
         if not company_name:
             raise ValueError(
@@ -133,7 +145,7 @@ class HrPeakSource(BaseSource):
             )
         self.company_name = company_name
         self.careers_url = careers_url
-        self.name = self._derive_source_name(company_name)
+        self.name = source_name or self._derive_source_name(company_name)
 
     @staticmethod
     def _derive_source_name(company_name: str) -> str:

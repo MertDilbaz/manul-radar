@@ -167,6 +167,7 @@ class ZohoRecruitSource(BaseSource):
         company_name: str,
         careers_url: str,
         portal_name: str | None = None,
+        source_name: str | None = None,
         timeout: int = REQUEST_TIMEOUT,
     ) -> None:
         if not company_name:
@@ -185,6 +186,9 @@ class ZohoRecruitSource(BaseSource):
                 "ZohoRecruitSource could not derive portal_name from "
                 f"careers_url={careers_url!r}; pass portal_name= explicitly."
             )
+        if source_name:
+            self.name = source_name
+            return
         # Slugify portal_name for source id.
         slug = re.sub(r"[^a-z0-9]+", "_", self.portal_name.lower()).strip("_")
         self.name = f"zoho_recruit_{slug}" if slug else "zoho_recruit"

@@ -4,6 +4,27 @@ Tarih sıralı, geriye dönük uyumlu. Breaking change'ler `⚠️` ile işaretl
 
 ---
 
+## 2026-06-29 — ⚠️ Production runner crash fix: `source_name` caller/callee mismatch
+
+### Fixed
+
+- **`run_monitor._build_sources_from_config` → `SuccessFactorsSource(...)` raised `TypeError: unexpected keyword argument 'source_name'` in production.** The dispatch helper was already passing ``source_name=name or None`` to every parser, but 5 parsers (`HrPeakSource`, `SuccessFactorsSource`, `PeopliseSource`, `HirexSource`, `ZohoRecruitSource`) silently dropped the kwarg from their constructor signature. The bug shipped because every existing smoke test monkeypatched ``fetch_jobs`` rather than exercising the real ``__init__``, so the kwarg mismatch never surfaced locally.
+- **All 5 parsers now accept an optional ``source_name: str | None = None`` keyword** and use it to override the derived ``name`` attribute. The behaviour is backward-compatible: omitting the kwarg keeps the old derived name (``hrpeak_<slug>``, ``successfactors_<slug>``, ``peoplise_<account>``, ``hirex_<slug>``, ``zoho_recruit_<slug>``).
+- **`run_monitor._build_sources_from_config` now passes ``source_name=name or None`` to `HrPeakSource` as well** — the dispatch helper is now consistent across all 11 parsers.
+
+### Added
+
+- **`tests/smoke_source_name_contract.py`** — 22 assertions (11 parsers × 2 checks) that fail loudly if any parser drops the ``source_name`` parameter or returns an empty default name. Runs without mocks so a regression in any parser constructor is caught before commit.
+- **`scripts/check_sources_construct.py`** — sanity check that drives ``_build_sources_from_config`` with the real ``config.sources`` + ``companies.yaml`` and verifies every enabled source constructs cleanly. Network-free; only constructor wiring is exercised.
+
+### Not changed (intentional)
+
+- All existing tests still pass — total 110 OK / 0 FAIL after the fix (`smoke_job_scorer_policy` 9, `smoke_telegram_notifier` 10, `smoke_run_monitor_guards` 24, `smoke_ats_sources` 19, `smoke_run_monitor` 9, `smoke_scoring_v2` 17, `smoke_source_name_contract` 22).
+- The 2026-06-29 Telegram production-safety guards (MANUL_ENABLE_TELEGRAM_SEND, dummy-mode block, source summary log, empty-source RuntimeError) and the V2 scoring tiered weights remain intact and re-tested.
+- Source parsing behaviour (HTML extraction, JSON fallbacks, empty markers, error isolation) is unchanged for all 11 parsers.
+
+---
+
 ## 2026-06-29 — Scoring V2: tiered weights + confidence + exclusive buckets
 
 ### Added

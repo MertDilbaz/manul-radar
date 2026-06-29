@@ -14,11 +14,26 @@ from app.sources.base_source import BaseSource
 
 
 class SuccessFactorsSource(BaseSource):
-    def __init__(self, company_name: str, careers_url: str, timeout: int = 20) -> None:
+    def __init__(
+        self,
+        company_name: str,
+        careers_url: str,
+        source_name: str | None = None,
+        timeout: int = 20,
+    ) -> None:
+        """Configure the SuccessFactors source.
+
+        ``company_name`` and ``careers_url`` are required; ``source_name``
+        is optional. When ``source_name`` is supplied, it overrides the
+        derived slug (``successfactors_<company_slug>``) so a config
+        can pin the ``name`` attribute to a stable id even if the
+        company field is later renamed. ``timeout`` is the network
+        timeout in seconds.
+        """
         self.company_name = company_name
         self.careers_url = careers_url
         self.timeout = timeout
-        self.name = self._build_source_name(company_name)
+        self.name = source_name or self._build_source_name(company_name)
 
     def fetch_jobs(self) -> list[Job]:
         response = requests.get(

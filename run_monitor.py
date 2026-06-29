@@ -413,7 +413,13 @@ def _build_sources_from_config(config: dict) -> list[BaseSource]:
             if parser == "hrpeak":
                 if not company or not url:
                     raise ValueError("hrpeak requires company and url")
-                built.append(HrPeakSource(company_name=company, careers_url=url))
+                built.append(
+                    HrPeakSource(
+                        company_name=company,
+                        careers_url=url,
+                        source_name=name or None,
+                    )
+                )
                 logger.info(f"Registered source: hrpeak / {company} -> {url}")
 
             elif parser == "successfactors":

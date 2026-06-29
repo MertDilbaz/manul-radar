@@ -86,6 +86,7 @@ class HirexSource(BaseSource):
         company_name: str,
         careers_url: str,
         slug: str | None = None,
+        source_name: str | None = None,
         timeout: int = REQUEST_TIMEOUT,
     ) -> None:
         if not company_name:
@@ -104,7 +105,7 @@ class HirexSource(BaseSource):
                 "HirexSource could not derive slug from "
                 f"careers_url={careers_url!r}; pass slug= explicitly."
             )
-        self.name = f"hirex_{self.slug}"
+        self.name = source_name or f"hirex_{self.slug}"
 
     @staticmethod
     def _slug_from_url(url: str) -> str:
