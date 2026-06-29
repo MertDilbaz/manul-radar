@@ -15,6 +15,12 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Opt-in guard for real Telegram delivery. The runner refuses
+      # to call TelegramNotifier.send_message() unless this env var
+      # is set to a truthy value. Production CI sets it explicitly
+      # here; local checkouts / other CI jobs without it will still
+      # run the monitor + persist path but skip notifications.
+      MANUL_ENABLE_TELEGRAM_SEND: "true"
       JOB_DB_PATH: data/jobs.db
 
     steps:

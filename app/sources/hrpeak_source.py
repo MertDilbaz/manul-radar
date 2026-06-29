@@ -76,10 +76,14 @@ _JOB_LINK_TOKENS: tuple[str, ...] = (
 # do not "discover" the listing page as its own job. The match is
 # suffix-based so any company that points ``careers_url`` at a
 # different listing path still gets excluded if the path ends with
-# one of these.
+# one of these. ``/jobs`` covers the newer HRPeak tenants (e.g.
+# ziraatteknoloji.hrpeak.com/jobs, innova.hrpeak.com/jobs); their
+# actual job-detail URLs end with ``/jobs/<id>`` so they still pass.
 _LISTING_URL_SUFFIXES: tuple[str, ...] = (
     "/site.aspx",
     "/ilan/site.aspx",
+    "/jobs",
+    "/jobs/",
 )
 
 _USER_AGENT = (

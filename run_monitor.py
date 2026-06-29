@@ -16,27 +16,46 @@ workflow, use::
 
     python run_monitor.py --test-telegram
 
-To exercise the full persist + Telegram path with deterministic
-fixture data instead of the live Kafein (or any other) source, use::
+To exercise the full persist path with deterministic fixture data
+instead of the live sources, use::
 
     python run_monitor.py --use-dummy-source
 
-Telegram delivery is opt-in. The bot token and chat id are read from
-the environment under names declared in ``config.yaml`` under
-``telegram.token_env`` / ``telegram.chat_id_env`` — the config holds
-*names*, never *secrets*. If either env var is missing we log a
-warning, skip notification, and let the monitoring run complete
-normally (the repository is still updated, scores still computed).
-This makes the script safe to invoke from CI smoke checks where no
-real Telegram token is wired in.
+Production safety guards (added 2026-06-29):
 
-Sources are read from ``config.sources``. The current contract
-recognises multiple parser kinds — ``hrpeak``, ``successfactors``,
-``workable``, ``greenhouse``, ``lever``, ``smartrecruiters``,
-``teamtailor`` and ``kariyer_net`` —
-and instantiates one source object per enabled entry. New parsers
-(successfactors, workable, greenhouse, ...) will plug into the
-same dispatch in ``_build_sources_from_config``.
+* ``--use-dummy-source`` runs ``DummySource`` instead of the live
+  parsers. In that mode Telegram delivery is *forbidden* — the
+  runner logs a warning and skips ``notifier.send_message`` so
+  fixture jobs can never leak to real users.
+* Telegram delivery is also gated on ``MANUL_ENABLE_TELEGRAM_SEND``
+  being set to a truthy value (``"1"`` / ``"true"`` / ``"yes"`` /
+  ``"on"``, case-insensitive). The CI workflow ``job-monitor.yml``
+  sets this explicitly; a local checkout without it will run the
+  monitor + persist path but skip notifications.
+* If config + companies yield zero enabled sources, the runner
+  raises ``RuntimeError("No enabled job sources configured.
+  Refusing to run dummy source in production.")`` instead of
+  silently falling back to ``DummySource``.
+* The runner logs the loaded source list at INFO level
+  (``Loaded N enabled sources: ...``) so an operator can tell from
+  the CI log which parsers actually ran.
+
+Telegram delivery uses bot token / chat id env vars whose *names*
+are declared in ``config.yaml`` under ``telegram.token_env`` /
+``telegram.chat_id_env``. The config holds *names*, never *secrets*.
+If either env var is missing we log a warning, skip notification,
+and let the monitoring run complete normally (the repository is
+still updated, scores still computed). This makes the script safe
+to invoke from CI smoke checks where no real Telegram token is
+wired in.
+
+Sources are read from ``config.sources`` and ``companies.yaml``.
+The current contract recognises multiple parser kinds — ``hrpeak``,
+``successfactors``, ``workable``, ``greenhouse``, ``lever``,
+``smartrecruiters``, ``teamtailor``, ``kariyer_net``, ``peoplise``,
+``hirex`` and ``zoho_recruit`` — and instantiates one source
+object per enabled entry. New parsers plug into the same dispatch
+in ``_build_sources_from_config``.
 
 The SQLite database path can be overridden with the ``JOB_DB_PATH``
 environment variable (default: ``data/jobs.db``). The smoke test
@@ -61,13 +80,16 @@ from app.services.job_monitor_service import JobMonitorService
 from app.sources.base_source import BaseSource
 from app.sources.dummy_source import DummySource
 from app.sources.greenhouse_source import GreenhouseSource
+from app.sources.hirex_source import HirexSource
 from app.sources.hrpeak_source import HrPeakSource
 from app.sources.kariyer_net_source import KariyerNetSource
 from app.sources.lever_source import LeverSource
+from app.sources.peoplise_source import PeopliseSource
 from app.sources.smartrecruiters_source import SmartRecruitersSource
 from app.sources.successfactors_source import SuccessFactorsSource
 from app.sources.teamtailor_source import TeamtailorSource
 from app.sources.workable_source import WorkableSource
+from app.sources.zoho_recruit_source import ZohoRecruitSource
 from app.utils.logger import logger, setup_logging
 
 
@@ -126,6 +148,21 @@ def _build_scorer(config: dict) -> JobScorer:
     )
 
 
+def _is_telegram_send_enabled() -> bool:
+    """Return True if real Telegram sending is allowed for this run.
+
+    Production safety guard: the runner refuses to call
+    ``TelegramNotifier.send_message`` unless the ``MANUL_ENABLE_TELEGRAM_SEND``
+    env var is explicitly set to a truthy value (``"1"``, ``"true"``,
+    ``"yes"``, ``"on"``; case-insensitive). This makes it structurally
+    impossible to spam real users from a local checkout, a forgotten
+    test run, or a CI matrix job that doesn't opt in. CI workflows
+    that *want* real delivery must set the env explicitly.
+    """
+    raw = os.environ.get("MANUL_ENABLE_TELEGRAM_SEND", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _try_build_notifier(config: dict) -> TelegramNotifier | None:
     """Build a ``TelegramNotifier`` if the env vars are populated.
 
@@ -135,6 +172,12 @@ def _try_build_notifier(config: dict) -> TelegramNotifier | None:
     name is missing from config *or* either env var is unset, so the
     caller can skip notification entirely instead of crashing on a
     partial / misconfigured setup.
+
+    Note: building the notifier does *not* mean the runner will
+    actually send — the call sites in ``main()`` additionally check
+    :func:`_is_telegram_send_enabled`. The two checks are layered so
+    a missing opt-in env var is logged explicitly even when the
+    notifier was constructed (e.g. for diagnostic purposes).
     """
     telegram_cfg = config.get("telegram") or {}
     token_env_name = telegram_cfg.get("token_env")
@@ -159,9 +202,22 @@ def _try_build_notifier(config: dict) -> TelegramNotifier | None:
         )
         return None
 
+    if not _is_telegram_send_enabled():
+        logger.warning(
+            "MANUL_ENABLE_TELEGRAM_SEND is not set to a truthy value; "
+            "TelegramNotifier will be constructed for diagnostics but "
+            "the runner will refuse to call send_message(). Set "
+            "MANUL_ENABLE_TELEGRAM_SEND=true to allow real delivery."
+        )
+        # We still construct the notifier so downstream code can
+        # surface a consistent warning, but main() will short-circuit
+        # the send path via the same env-var check.
+        return TelegramNotifier(bot_token=bot_token, chat_id=chat_id)
+
     logger.info(
         f"TelegramNotifier ready "
-        f"(chat_id_env={chat_id_env_name}, bot_token_env={token_env_name})."
+        f"(chat_id_env={chat_id_env_name}, bot_token_env={token_env_name}, "
+        "MANUL_ENABLE_TELEGRAM_SEND=true)."
     )
     return TelegramNotifier(bot_token=bot_token, chat_id=chat_id)
 
@@ -411,11 +467,53 @@ def _build_sources_from_config(config: dict) -> list[BaseSource]:
                     f"Registered source: kariyer_net (name={name or 'kariyer_net'}) -> {url}"
                 )
 
+            elif parser == "peoplise":
+                if not company or not url:
+                    raise ValueError("peoplise requires company and url")
+                account = str(entry.get("account") or "").strip()
+                built.append(
+                    PeopliseSource(
+                        company_name=company,
+                        careers_url=url,
+                        account=account or None,
+                    )
+                )
+                logger.info(f"Registered source: peoplise / {company} -> {url}")
+
+            elif parser == "hirex":
+                if not company or not url:
+                    raise ValueError("hirex requires company and url")
+                slug = str(entry.get("account") or entry.get("slug") or "").strip()
+                built.append(
+                    HirexSource(
+                        company_name=company,
+                        careers_url=url,
+                        slug=slug or None,
+                    )
+                )
+                logger.info(f"Registered source: hirex / {company} -> {url}")
+
+            elif parser == "zoho_recruit":
+                if not company or not url:
+                    raise ValueError("zoho_recruit requires company and url")
+                portal_name = str(
+                    entry.get("portal_name") or entry.get("account") or ""
+                ).strip()
+                built.append(
+                    ZohoRecruitSource(
+                        company_name=company,
+                        careers_url=url,
+                        portal_name=portal_name or None,
+                    )
+                )
+                logger.info(f"Registered source: zoho_recruit / {company} -> {url}")
+
             else:
                 logger.warning(
                     f"Unknown parser {parser!r} at sources[{index}]; skipping. "
                     "Supported: hrpeak, successfactors, workable, greenhouse, "
-                    "lever, smartrecruiters, teamtailor, kariyer_net."
+                    "lever, smartrecruiters, teamtailor, kariyer_net, "
+                    "peoplise, hirex, zoho_recruit."
                 )
         except ValueError as exc:
             logger.warning(f"{parser} source at index {index} rejected: {exc}")
@@ -425,7 +523,10 @@ def _build_sources_from_config(config: dict) -> list[BaseSource]:
         logger.error(
             "No usable sources in config/companies. Add at least one enabled source."
         )
-        raise SystemExit(1)
+        raise RuntimeError(
+            "No enabled job sources configured. "
+            "Refusing to run dummy source in production."
+        )
 
     return built
 
@@ -508,6 +609,37 @@ def main() -> int:
         else _build_sources_from_config(config)
     )
 
+    # Loud, structured source summary so an operator can tell at a
+    # glance what the runner is actually doing — especially important
+    # to spot a dummy-source leak into a real Telegram run, which
+    # is the failure mode this log line was introduced for.
+    if args.use_dummy_source:
+        logger.warning(
+            "DUMMY SOURCE MODE ACTIVE: using DummySource (in-process "
+            "fixture, no network). Telegram delivery is forbidden in "
+            "this mode — see _send_telegram_messages() for the guard."
+        )
+        logger.info("Loaded 1 enabled source: dummy")
+    else:
+        logger.info(f"Loaded {len(sources)} enabled sources:")
+        for src in sources:
+            # Each source exposes either ``company_name`` (most parsers)
+            # or ``name`` (e.g. DummySource); fall back gracefully.
+            label = getattr(src, "company_name", None) or getattr(src, "name", "<unnamed>")
+            parser = getattr(src, "__class__", type(src)).__name__
+            logger.info(f"  - {parser.lower()} / {label}")
+
+    telegram_send_allowed = _is_telegram_send_enabled()
+    if not telegram_send_allowed:
+        logger.warning(
+            "MANUL_ENABLE_TELEGRAM_SEND is not set to a truthy value. "
+            "The monitor will run and persist results, but will NOT "
+            "send any Telegram messages. Set MANUL_ENABLE_TELEGRAM_SEND=true "
+            "(case-insensitive) to opt in."
+        )
+    else:
+        logger.info("MANUL_ENABLE_TELEGRAM_SEND=true — Telegram delivery is enabled.")
+
     scoring_cfg = config.get("scoring") or {}
     try:
         debug_rejected_limit = int(scoring_cfg.get("debug_top_rejected", 20))
@@ -534,7 +666,11 @@ def main() -> int:
 
     sent = 0
     failed = 0
-    if notifier is not None:
+    if (
+        notifier is not None
+        and not args.use_dummy_source
+        and telegram_send_allowed
+    ):
         notification_cfg = config.get("notification") or {}
         mode = str(notification_cfg.get("mode") or "digest_pages").strip().lower()
 
@@ -600,6 +736,26 @@ def main() -> int:
                         f"    -> Telegram digest page send failed "
                         f"({index}/{len(messages)}): {exc}"
                     )
+    else:
+        # Single-shot guard summary: if we end up here, the runner
+        # deliberately skipped Telegram delivery. Surface the exact
+        # reason so a CI log makes the cause obvious without grep.
+        if args.use_dummy_source:
+            logger.warning(
+                "Telegram delivery SKIPPED: dummy source mode is active. "
+                "Dummy data must never leave the process."
+            )
+        elif not telegram_send_allowed:
+            logger.warning(
+                "Telegram delivery SKIPPED: MANUL_ENABLE_TELEGRAM_SEND is "
+                "not truthy. Monitoring + persist still ran; only the "
+                "outbound notification was suppressed."
+            )
+        elif notifier is None:
+            logger.warning(
+                "Telegram delivery SKIPPED: notifier is None "
+                "(missing env vars or config keys)."
+            )
 
     logger.info(
         f"Monitoring run complete. {sent} sent, {failed} failed."

@@ -85,6 +85,43 @@ companies:
   enabled: false
   disabled_reason: 'Disabled by default: global/non-Turkey board. Current scope is
     Turkey-only junior/new-grad software and software-support roles.'
+- parser: lever
+  name: lever_iyzico
+  company: iyzico
+  company_slug: iyzico
+  enabled: true
+- parser: hrpeak
+  name: hrpeak_ziraat_teknoloji
+  company: Ziraat Teknoloji
+  url: https://ziraatteknoloji.hrpeak.com/jobs
+  enabled: false
+  disabled_reason: 'Disabled after live probe: page returns the empty marker
+    ''yayınlanmış bir açık pozisyon bulunamadı'' at fetch time. Tenant seems
+    to have no open positions right now; re-enable on a later probe that
+    yields parseable job URLs.'
+- parser: hrpeak
+  name: hrpeak_innova
+  company: İnnova
+  url: https://innova.hrpeak.com/jobs
+  enabled: true
+- parser: peoplise
+  name: peoplise_logo
+  company: Logo Yazılım
+  url: https://live.peoplise.com/logo/career
+  enabled: true
+- parser: hirex
+  name: hirex_papara
+  company: Papara
+  url: https://app.gethirex.com/o/papara/
+  enabled: true
+- parser: zoho_recruit
+  name: zoho_recruit_param
+  company: Param
+  url: https://param.zohorecruit.com/jobs/PARAM-Kariyer
+  enabled: false
+  disabled_reason: 'Disabled by default: tenant hydrates listings from an authenticated
+    Zoho Recruit API (returns 401) and the public HTML has no parseable job anchors
+    at probe time. Re-enable once a tenant is verified to round-trip a parseable URL.'
 - parser: smartrecruiters
   name: smartrecruiters_experian
   company: Experian

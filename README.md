@@ -65,6 +65,9 @@ The runtime currently supports these source families:
 - Lever
 - SmartRecruiters
 - Teamtailor
+- Peoplise *(Logo Yazılım ve benzeri tenantlar; sadece `/application/landing/` anchor'ları)*
+- Hirex *(Papara ve benzeri tenantlar; HTML + inline JSON; 0 job hata değil)*
+- Zoho Recruit *(Param tenant; disabled — auth-gated API)*
 - Kariyer.net *(kept disabled by default because scripted runs often receive 403 Forbidden)*
 
 Runtime/scoring settings live in:

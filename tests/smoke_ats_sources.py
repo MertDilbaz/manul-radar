@@ -90,12 +90,106 @@ def test_teamtailor() -> None:
     _record("TEAMTAILOR_TITLE", jobs and jobs[0].title == "Software Engineer Java", jobs[0].title if jobs else "")
 
 
+def test_peoplise() -> None:
+    from app.sources.peoplise_source import PeopliseSource
+
+    html = (
+        '<html><body>'
+        '<a href="javascript:void(0);">noise</a>'
+        '<a href="/logo/application/landing/abc-123">Junior Java Developer Istanbul</a>'
+        '<a href="/logo/application/landing/def-456">Backend Engineer, Spring Boot</a>'
+        '<a href="/other/application/landing/zzz-999">wrong account, must be skipped</a>'
+        '<a href="https://twitter.com/logoyazilim">social, must be skipped</a>'
+        '</body></html>'
+    )
+    source = PeopliseSource("Logo Yazılım", "https://live.peoplise.com/logo/career")
+    jobs = source._parse_jobs(html)
+    _record("PEOPLISE_COUNT", len(jobs) == 2, f"count={len(jobs)}")
+    _record("PEOPLISE_URL", jobs and all("/application/landing/" in j.url for j in jobs),
+            ", ".join(j.url for j in jobs))
+    _record("PEOPLISE_TITLE", jobs and "Junior Java" in jobs[0].title,
+            jobs[0].title if jobs else "")
+
+
+def test_hirex() -> None:
+    from app.sources.hirex_source import HirexSource
+
+    # Empty page is a normal result, not an error.
+    source = HirexSource("Papara", "https://app.gethirex.com/o/papara/")
+    _record("HIREX_EMPTY_OK", source._parse_jobs("") == [], "empty html -> []")
+    _record("HIREX_NO_JOBS_OK", source._parse_jobs("<html><body>no open positions here</body></html>") == [],
+            "no-open-positions marker -> []")
+
+    html = (
+        '<html><body>'
+        '<a href="/o/papara/">listing self-link</a>'
+        '<a href="/o/papara/senior-backend-engineer">Senior Backend Engineer</a>'
+        '</body></html>'
+    )
+    jobs = source._parse_jobs(html)
+    _record("HIREX_ANCHOR_COUNT", len(jobs) == 1, f"count={len(jobs)}")
+    _record("HIREX_ANCHOR_TITLE", jobs and "Senior Backend" in jobs[0].title,
+            jobs[0].title if jobs else "")
+
+
+def test_zoho_recruit() -> None:
+    from app.sources.zoho_recruit_source import ZohoRecruitSource
+
+    source = ZohoRecruitSource(
+        "Param",
+        "https://param.zohorecruit.com/jobs/PARAM-Kariyer",
+    )
+
+    # Empty / no-results pages are normal.
+    _record("ZOHO_EMPTY_OK", source._parse_jobs("") == [], "empty html -> []")
+    _record(
+        "ZOHO_NO_JOBS_OK",
+        source._parse_jobs("<html>no open positions</html>") == [],
+        "no-open-positions marker -> []",
+    )
+
+    # Anchor with /jobs/<portal>/<slug> shape.
+    html_anchor = (
+        '<html><body>'
+        '<a href="/jobs/PARAM-Kariyer/junior-java-developer">'
+        'Junior Java Developer</a>'
+        '<a href="https://param.zohorecruit.com/jobs/PARAM-Kariyer">'
+        'listing self-link</a>'
+        '</body></html>'
+    )
+    jobs = source._parse_jobs(html_anchor)
+    _record("ZOHO_ANCHOR_COUNT", len(jobs) == 1, f"count={len(jobs)}")
+    _record(
+        "ZOHO_ANCHOR_URL",
+        jobs and "junior-java-developer" in jobs[0].url,
+        jobs[0].url if jobs else "",
+    )
+
+    # Anchor with ViewJobPosting?jobId=... shape.
+    html_viewjob = (
+        '<html><body>'
+        '<a href="/recruit/v2/ViewJobPosting?jobId=ABC123&amp;src=JB-10061">'
+        'Backend Engineer</a>'
+        '</body></html>'
+    )
+    jobs_view = source._parse_jobs(html_viewjob)
+    _record("ZOHO_VIEWJOB_COUNT", len(jobs_view) == 1, f"count={len(jobs_view)}")
+    _record(
+        "ZOHO_VIEWJOB_URL",
+        jobs_view and jobs_view[0].url == "https://param.zohorecruit.com/recruit/v2/ViewJobPosting?jobId=ABC123",
+        jobs_view[0].url if jobs_view else "",
+    )
+
+
 if __name__ == "__main__":
     test_greenhouse()
     test_lever()
     test_workable()
     test_smartrecruiters()
     test_teamtailor()
+    test_peoplise()
+    test_hirex()
+    test_zoho_recruit()
     if failures:
         print("FAILURES", failures)
         raise SystemExit(1)
