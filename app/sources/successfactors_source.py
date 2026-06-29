@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
-import requests
 from bs4 import BeautifulSoup
 from loguru import logger
 
 from app.models.job import Job
+from app.sources.ats_helpers import fetch_with_retry, source_slug
 from app.sources.base_source import BaseSource
 
 
@@ -33,10 +33,10 @@ class SuccessFactorsSource(BaseSource):
         self.company_name = company_name
         self.careers_url = careers_url
         self.timeout = timeout
-        self.name = source_name or self._build_source_name(company_name)
+        self.name = source_name or source_slug("successfactors", company_name)
 
     def fetch_jobs(self) -> list[Job]:
-        response = requests.get(
+        response = fetch_with_retry(
             self.careers_url,
             timeout=self.timeout,
             headers={
@@ -48,8 +48,14 @@ class SuccessFactorsSource(BaseSource):
             },
         )
         response.raise_for_status()
+        return self._parse_jobs(response.text)
 
-        soup = BeautifulSoup(response.text, "html.parser")
+    def _parse_jobs(self, html: str) -> list[Job]:
+        """Parse HTML into ``Job`` instances; ``[]`` on failure."""
+        if not html:
+            return []
+
+        soup = BeautifulSoup(html, "html.parser")
         discovered_at = datetime.now(timezone.utc).isoformat()
 
         jobs: list[Job] = []
@@ -73,11 +79,14 @@ class SuccessFactorsSource(BaseSource):
             if not title:
                 continue
 
+            # Try to extract a location from the anchor's parent row/cell
+            location = self._extract_location(link)
+
             jobs.append(
                 Job(
                     title=title,
                     company=self.company_name,
-                    location=None,
+                    location=location,
                     work_type=None,
                     seniority=None,
                     source=self.name,
@@ -95,6 +104,29 @@ class SuccessFactorsSource(BaseSource):
         )
 
         return jobs
+
+    @staticmethod
+    def _extract_location(link) -> str | None:
+        """Best-effort location extraction from a table row sibling.
+
+        SuccessFactors job listings are typically inside ``<tr>`` rows
+        where the first ``<td>`` holds the job link and a sibling ``<td>``
+        holds the location text.
+        """
+        parent = link.parent
+        if parent is None:
+            return None
+        # Look at sibling cells in the same row
+        for sibling in parent.find_all_next(["td", "div"]):
+            text = sibling.get_text(strip=True)
+            if text and text != link.get_text(strip=True):
+                # Looks like a city/region reference
+                if len(text) < 100 and ("," in text or any(
+                    city in text.lower()
+                    for city in ("istanbul", "ankara", "izmir", "tr", "turkey", "türkiye")
+                )):
+                    return text
+        return None
 
     def _looks_like_job_link(self, href: str, text: str) -> bool:
         href_lower = href.lower()
@@ -148,17 +180,3 @@ class SuccessFactorsSource(BaseSource):
             return ""
 
         return title
-
-    def _build_source_name(self, company_name: str) -> str:
-        normalized = company_name.lower()
-        normalized = normalized.replace("ı", "i")
-        normalized = normalized.replace("ğ", "g")
-        normalized = normalized.replace("ü", "u")
-        normalized = normalized.replace("ş", "s")
-        normalized = normalized.replace("ö", "o")
-        normalized = normalized.replace("ç", "c")
-        normalized = "".join(
-            char if char.isalnum() else "_" for char in normalized
-        )
-        normalized = "_".join(part for part in normalized.split("_") if part)
-        return f"successfactors_{normalized}"

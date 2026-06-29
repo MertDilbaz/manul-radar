@@ -68,9 +68,9 @@ import argparse
 import os
 
 from app.config.config_loader import load_config, load_optional_config
+from app.config.scorer_factory import build_scorer_from_config
 from app.config.env_loader import load_env
 from app.database.job_repository import JobRepository
-from app.filters.job_scorer import JobScorer
 from app.notifier.telegram_notifier import (
     TelegramNotifier,
     format_job_digest_page_messages,
@@ -79,113 +79,10 @@ from app.notifier.telegram_notifier import (
 from app.services.job_monitor_service import JobMonitorService
 from app.sources.base_source import BaseSource
 from app.sources.dummy_source import DummySource
-from app.sources.greenhouse_source import GreenhouseSource
-from app.sources.hirex_source import HirexSource
-from app.sources.hrpeak_source import HrPeakSource
-from app.sources.kariyer_net_source import KariyerNetSource
-from app.sources.lever_source import LeverSource
-from app.sources.peoplise_source import PeopliseSource
-from app.sources.smartrecruiters_source import SmartRecruitersSource
-from app.sources.successfactors_source import SuccessFactorsSource
-from app.sources.teamtailor_source import TeamtailorSource
-from app.sources.workable_source import WorkableSource
-from app.sources.zoho_recruit_source import ZohoRecruitSource
 from app.utils.logger import logger, setup_logging
 
 
 _DEFAULT_DB_PATH = "data/jobs.db"
-
-
-def _build_scorer(config: dict) -> JobScorer:
-    """Construct a ``JobScorer`` from the loaded config dict.
-
-    See ``main.py._build_scorer`` for the matching implementation;
-    this is duplicated here intentionally so this entrypoint stays
-    self-contained and ``main.py`` (the smoke target) cannot be
-    changed accidentally by edits aimed at the real runner.
-
-    V2 (2026-06-29): reads the new tiered-weight and penalty settings
-    (``strong_weight``, ``weak_weight``, ``location_weight``,
-    ``company_boost_weight``, ``mobile_penalty``,
-    ``generic_only_penalty``, ``high_confidence_min_score``,
-    ``low_confidence_min_score``) and the new keyword buckets
-    (``weak_keywords``, ``company_boost_keywords``,
-    ``mobile_negative_keywords``) introduced so generic
-    "Software Engineer" listings no longer crowd out junior+java hits.
-    Older keys remain honoured for backward compatibility.
-    """
-    scoring_cfg = config.get("scoring") or {}
-    keywords_cfg = config.get("keywords") or {}
-
-    include = list(keywords_cfg.get("include") or [])
-    exclude = list(keywords_cfg.get("exclude") or [])
-    hard_exclude = list(keywords_cfg.get("hard_exclude") or [])
-    domain_required = list(keywords_cfg.get("domain_required") or [])
-    non_target_domain = list(keywords_cfg.get("non_target_domain") or [])
-    source_boost = list(keywords_cfg.get("source_boost") or [])
-    location_required = list(keywords_cfg.get("location_required") or [])
-    location_reject = list(keywords_cfg.get("location_reject") or [])
-    role_required = list(keywords_cfg.get("role_required") or [])
-    # V2 keyword buckets
-    weak_keywords = list(keywords_cfg.get("weak_keywords") or [])
-    company_boost_keywords = list(keywords_cfg.get("company_boost_keywords") or [])
-    mobile_negative_keywords = list(keywords_cfg.get("mobile_negative_keywords") or [])
-
-    minimum_score = int(scoring_cfg.get("minimum_score", 0))
-    include_weight = int(scoring_cfg.get("include_weight", 20))
-    exclude_weight = int(scoring_cfg.get("exclude_weight", 40))
-    source_boost_weight = int(scoring_cfg.get("source_boost_weight", 8))
-    hard_exclude_experience_years_raw = scoring_cfg.get(
-        "hard_exclude_experience_years",
-        4,
-    )
-    hard_exclude_experience_years = (
-        int(hard_exclude_experience_years_raw)
-        if hard_exclude_experience_years_raw is not None
-        else None
-    )
-
-    # V2 tiered weights
-    strong_weight = scoring_cfg.get("strong_weight")
-    weak_weight = int(scoring_cfg.get("weak_weight", 8))
-    location_weight = int(scoring_cfg.get("location_weight", 10))
-    company_boost_weight = int(scoring_cfg.get("company_boost_weight", 10))
-    mobile_penalty = int(scoring_cfg.get("mobile_penalty", 25))
-    generic_only_penalty = int(scoring_cfg.get("generic_only_penalty", 25))
-    high_confidence_min_score = int(scoring_cfg.get("high_confidence_min_score", 80))
-    high_confidence_min_strong = int(scoring_cfg.get("high_confidence_min_strong", 1))
-    low_confidence_min_score = int(scoring_cfg.get("low_confidence_min_score", 40))
-
-    return JobScorer(
-        include_keywords=include,
-        exclude_keywords=exclude,
-        minimum_score=minimum_score,
-        include_weight=include_weight,
-        exclude_weight=exclude_weight,
-        hard_exclude_keywords=hard_exclude,
-        hard_exclude_experience_years=hard_exclude_experience_years,
-        domain_required_keywords=domain_required,
-        non_target_domain_keywords=non_target_domain,
-        source_boost_keywords=source_boost,
-        source_boost_weight=source_boost_weight,
-        location_required_keywords=location_required,
-        location_reject_keywords=location_reject,
-        role_required_keywords=role_required,
-        # V2 keyword buckets
-        weak_keywords=weak_keywords,
-        company_boost_keywords=company_boost_keywords,
-        mobile_negative_keywords=mobile_negative_keywords,
-        # V2 tiered weights
-        strong_weight=strong_weight,
-        weak_weight=weak_weight,
-        location_weight=location_weight,
-        company_boost_weight=company_boost_weight,
-        mobile_penalty=mobile_penalty,
-        generic_only_penalty=generic_only_penalty,
-        high_confidence_min_score=high_confidence_min_score,
-        high_confidence_min_strong=high_confidence_min_strong,
-        low_confidence_min_score=low_confidence_min_score,
-    )
 
 
 def _is_telegram_send_enabled() -> bool:
@@ -362,7 +259,12 @@ def _build_sources_from_config(config: dict) -> list[BaseSource]:
     ``app/config/companies.yaml`` file can also define a ``companies`` list
     using the same fields; this lets the project scale to many company boards
     without turning the main runtime config into a huge source registry.
+
+    Parser dispatch is delegated to :mod:`app.sources.registry` so adding a
+    new parser does not require editing this function.
     """
+    from app.sources.registry import build_source_from_entry
+
     raw_sources = config.get("sources") or []
     if not isinstance(raw_sources, list):
         logger.warning(
@@ -396,172 +298,12 @@ def _build_sources_from_config(config: dict) -> list[BaseSource]:
 
     built: list[BaseSource] = []
     for index, entry in enumerate(combined_entries):
-        if not entry.get("enabled", True):
-            logger.info(f"sources[{index}] disabled by config; skipping.")
-            continue
-
-        parser = str(entry.get("parser") or "").strip().lower()
-        company = str(entry.get("company") or "").strip()
-        name = str(entry.get("name") or "").strip()
-        url = str(entry.get("url") or entry.get("careers_url") or "").strip()
-
-        if not parser:
-            logger.warning(f"sources[{index}] has no 'parser' key; skipping.")
-            continue
-
         try:
-            if parser == "hrpeak":
-                if not company or not url:
-                    raise ValueError("hrpeak requires company and url")
-                built.append(
-                    HrPeakSource(
-                        company_name=company,
-                        careers_url=url,
-                        source_name=name or None,
-                    )
-                )
-                logger.info(f"Registered source: hrpeak / {company} -> {url}")
-
-            elif parser == "successfactors":
-                if not company or not url:
-                    raise ValueError("successfactors requires company and url")
-                built.append(
-                    SuccessFactorsSource(
-                        company_name=company,
-                        careers_url=url,
-                        source_name=name or None,
-                    )
-                )
-                logger.info(f"Registered source: successfactors / {company} -> {url}")
-
-            elif parser == "workable":
-                account = str(entry.get("account") or entry.get("slug") or "").strip()
-                if not company or not (account or url):
-                    raise ValueError("workable requires company and account or url")
-                built.append(
-                    WorkableSource(
-                        company_name=company,
-                        account=account or None,
-                        careers_url=url or None,
-                        source_name=name or None,
-                    )
-                )
-                logger.info(f"Registered source: workable / {company} -> {url or account}")
-
-            elif parser == "greenhouse":
-                board_token = str(entry.get("board_token") or entry.get("token") or entry.get("slug") or "").strip()
-                if not company or not board_token:
-                    raise ValueError("greenhouse requires company and board_token")
-                built.append(
-                    GreenhouseSource(
-                        company_name=company,
-                        board_token=board_token,
-                        source_name=name or None,
-                    )
-                )
-                logger.info(f"Registered source: greenhouse / {company} -> {board_token}")
-
-            elif parser == "lever":
-                company_slug = str(entry.get("company_slug") or entry.get("slug") or "").strip()
-                if not company or not company_slug:
-                    raise ValueError("lever requires company and company_slug")
-                built.append(
-                    LeverSource(
-                        company_name=company,
-                        company_slug=company_slug,
-                        source_name=name or None,
-                    )
-                )
-                logger.info(f"Registered source: lever / {company} -> {company_slug}")
-
-            elif parser == "smartrecruiters":
-                company_slug = str(entry.get("company_slug") or entry.get("slug") or "").strip()
-                if not company or not company_slug:
-                    raise ValueError("smartrecruiters requires company and company_slug")
-                built.append(
-                    SmartRecruitersSource(
-                        company_name=company,
-                        company_slug=company_slug,
-                        careers_url=url or None,
-                        source_name=name or None,
-                    )
-                )
-                logger.info(f"Registered source: smartrecruiters / {company} -> {url or company_slug}")
-
-            elif parser == "teamtailor":
-                if not company or not url:
-                    raise ValueError("teamtailor requires company and url")
-                built.append(
-                    TeamtailorSource(
-                        company_name=company,
-                        careers_url=url,
-                        source_name=name or None,
-                    )
-                )
-                logger.info(f"Registered source: teamtailor / {company} -> {url}")
-
-            elif parser == "kariyer_net":
-                if not url:
-                    raise ValueError("kariyer_net requires url")
-                built.append(
-                    KariyerNetSource(
-                        search_url=url,
-                        source_name=name or "kariyer_net",
-                    )
-                )
-                logger.info(
-                    f"Registered source: kariyer_net (name={name or 'kariyer_net'}) -> {url}"
-                )
-
-            elif parser == "peoplise":
-                if not company or not url:
-                    raise ValueError("peoplise requires company and url")
-                account = str(entry.get("account") or "").strip()
-                built.append(
-                    PeopliseSource(
-                        company_name=company,
-                        careers_url=url,
-                        account=account or None,
-                    )
-                )
-                logger.info(f"Registered source: peoplise / {company} -> {url}")
-
-            elif parser == "hirex":
-                if not company or not url:
-                    raise ValueError("hirex requires company and url")
-                slug = str(entry.get("account") or entry.get("slug") or "").strip()
-                built.append(
-                    HirexSource(
-                        company_name=company,
-                        careers_url=url,
-                        slug=slug or None,
-                    )
-                )
-                logger.info(f"Registered source: hirex / {company} -> {url}")
-
-            elif parser == "zoho_recruit":
-                if not company or not url:
-                    raise ValueError("zoho_recruit requires company and url")
-                portal_name = str(
-                    entry.get("portal_name") or entry.get("account") or ""
-                ).strip()
-                built.append(
-                    ZohoRecruitSource(
-                        company_name=company,
-                        careers_url=url,
-                        portal_name=portal_name or None,
-                    )
-                )
-                logger.info(f"Registered source: zoho_recruit / {company} -> {url}")
-
-            else:
-                logger.warning(
-                    f"Unknown parser {parser!r} at sources[{index}]; skipping. "
-                    "Supported: hrpeak, successfactors, workable, greenhouse, "
-                    "lever, smartrecruiters, teamtailor, kariyer_net, "
-                    "peoplise, hirex, zoho_recruit."
-                )
+            source = build_source_from_entry(entry, index=index)
+            if source is not None:
+                built.append(source)
         except ValueError as exc:
+            parser = str(entry.get("parser") or "").strip().lower()
             logger.warning(f"{parser} source at index {index} rejected: {exc}")
             continue
 
@@ -637,7 +379,7 @@ def main() -> int:
         logger.error(f"Configuration error: {exc}")
         return 1
 
-    scorer = _build_scorer(config)
+    scorer = build_scorer_from_config(config)
     notifier = _try_build_notifier(config)
 
     db_path = os.environ.get("JOB_DB_PATH", _DEFAULT_DB_PATH)

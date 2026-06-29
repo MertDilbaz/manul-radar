@@ -1,9 +1,8 @@
 """Greenhouse public Job Board API source."""
 from __future__ import annotations
 
-import requests
 
-from app.sources.ats_helpers import JSON_HEADERS, REQUEST_TIMEOUT, html_to_text, make_job, source_slug, utc_now_iso
+from app.sources.ats_helpers import fetch_with_retry, JSON_HEADERS, REQUEST_TIMEOUT, html_to_text, make_job, source_slug, utc_now_iso
 from app.sources.base_source import BaseSource
 from app.models.job import Job
 from app.utils.logger import logger
@@ -30,7 +29,7 @@ class GreenhouseSource(BaseSource):
         self.api_url = f"https://boards-api.greenhouse.io/v1/boards/{self.board_token}/jobs?content=true"
 
     def fetch_jobs(self) -> list[Job]:
-        response = requests.get(self.api_url, timeout=self.timeout, headers=JSON_HEADERS)
+        response = fetch_with_retry(self.api_url, timeout=self.timeout, headers=JSON_HEADERS)
         response.raise_for_status()
         data = response.json()
         raw_jobs = data.get("jobs") if isinstance(data, dict) else []

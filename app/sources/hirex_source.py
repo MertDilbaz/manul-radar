@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 from urllib.parse import urljoin
 
 import requests
@@ -35,6 +34,8 @@ from app.sources.ats_helpers import (
     DEFAULT_HEADERS,
     REQUEST_TIMEOUT,
     clean_text,
+    utc_now_iso,
+    fetch_with_retry,
 )
 from app.utils.logger import logger
 
@@ -120,7 +121,7 @@ class HirexSource(BaseSource):
     def fetch_jobs(self) -> list[Job]:
         """GET the page; ``[]`` if the page has no job anchors / JSON."""
         try:
-            response = requests.get(
+            response = fetch_with_retry(
                 self.careers_url,
                 timeout=self.timeout,
                 headers={**DEFAULT_HEADERS, "User-Agent": _USER_AGENT},
@@ -182,7 +183,7 @@ class HirexSource(BaseSource):
     def _extract_jobs_from_soup(self, soup: BeautifulSoup) -> list[Job]:
         seen_urls: set[str] = set()
         jobs: list[Job] = []
-        discovered_at = datetime.utcnow().isoformat()
+        discovered_at = utc_now_iso()
 
         for anchor in soup.find_all("a", href=True):
             if not isinstance(anchor, Tag):
@@ -228,7 +229,7 @@ class HirexSource(BaseSource):
         ``[]`` and the source as a whole continues.
         """
         jobs: list[Job] = []
-        discovered_at = datetime.utcnow().isoformat()
+        discovered_at = utc_now_iso()
 
         for match in _JOB_LINK_RE.finditer(html):
             path = match.group(1)

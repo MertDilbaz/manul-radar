@@ -1,10 +1,9 @@
 """SmartRecruiters public career-page / postings source."""
 from __future__ import annotations
 
-import requests
 from bs4 import BeautifulSoup, Tag
 
-from app.sources.ats_helpers import DEFAULT_HEADERS, JSON_HEADERS, REQUEST_TIMEOUT, absolute_url, clean_text, html_to_text, make_job, source_slug, utc_now_iso
+from app.sources.ats_helpers import fetch_with_retry, DEFAULT_HEADERS, JSON_HEADERS, REQUEST_TIMEOUT, absolute_url, clean_text, html_to_text, make_job, source_slug, utc_now_iso
 from app.sources.base_source import BaseSource
 from app.models.job import Job
 from app.utils.logger import logger
@@ -38,7 +37,7 @@ class SmartRecruitersSource(BaseSource):
 
     def fetch_jobs(self) -> list[Job]:
         try:
-            response = requests.get(self.api_url, timeout=self.timeout, headers=JSON_HEADERS)
+            response = fetch_with_retry(self.api_url, timeout=self.timeout, headers=JSON_HEADERS)
             if response.status_code < 400:
                 jobs = self._parse_api(response.json())
                 if jobs:
@@ -46,7 +45,7 @@ class SmartRecruitersSource(BaseSource):
         except Exception as exc:  # noqa: BLE001 - fallback to HTML page
             logger.debug("SmartRecruiters API fallback for '{}': {}", self.name, exc)
 
-        response = requests.get(self.careers_url, timeout=self.timeout, headers=DEFAULT_HEADERS)
+        response = fetch_with_retry(self.careers_url, timeout=self.timeout, headers=DEFAULT_HEADERS)
         response.raise_for_status()
         return self._parse_html(response.text)
 

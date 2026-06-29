@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from html import unescape
 from urllib.parse import urljoin
 
+import requests
 from bs4 import BeautifulSoup
 
 from app.models.job import Job
+from app.utils.logger import logger
 
 REQUEST_TIMEOUT = 20
 DEFAULT_HEADERS = {
@@ -25,9 +28,83 @@ JSON_HEADERS = {
     "Accept": "application/json,text/plain,*/*",
 }
 
+# Retry configuration for transient network failures. The monitor runs
+# once per weekday in CI, so a single flaky response means lost jobs for
+# that day. Three attempts with exponential backoff (1s, 2s) catches
+# the common case (slow DNS, temporary 502/503, rate-limit 429) without
+# adding meaningful latency to the happy path.
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_BACKOFF = 1.0
+
+# HTTP status codes that justify a retry. 429 (Too Many Requests) is
+# the most common; 502/503/504 are gateway errors that are often
+# transient. We deliberately do NOT retry on 4xx client errors other
+# than 429 (a 403 or 404 is a configuration / permissions issue, not a
+# transient failure).
+_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
+
 
 def utc_now_iso() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
+
+
+def fetch_with_retry(
+    url: str,
+    *,
+    headers: dict | None = None,
+    timeout: int = REQUEST_TIMEOUT,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    backoff: float = DEFAULT_RETRY_BACKOFF,
+) -> requests.Response:
+    """GET ``url`` with retry and exponential backoff for transient failures.
+
+    Retries on:
+
+    * ``requests.exceptions.ConnectionError`` / ``Timeout`` — network
+      blips, DNS hiccup, slow server.
+    * HTTP 429 / 502 / 503 / 504 — the server is temporarily
+      unavailable or rate-limiting us.
+
+    Non-retryable errors (``HTTPError`` from a 4xx other than 429,
+    ``JSONDecodeError``, etc.) propagate immediately after the first
+    attempt so the caller can handle them.
+
+    The backoff is exponential: ``backoff``, ``backoff * 2``,
+    ``backoff * 4`` … capped at 10 seconds per sleep.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.get(
+                url,
+                headers=headers or DEFAULT_HEADERS,
+                timeout=timeout,
+            )
+            if response.status_code in _RETRY_STATUS_CODES and attempt < max_retries:
+                sleep_for = min(backoff * (2 ** (attempt - 1)), 10)
+                logger.warning(
+                    f"fetch_with_retry: {url} returned HTTP {response.status_code}; "
+                    f"retry {attempt}/{max_retries} after {sleep_for:.1f}s."
+                )
+                time.sleep(sleep_for)
+                continue
+            return response
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                sleep_for = min(backoff * (2 ** (attempt - 1)), 10)
+                logger.warning(
+                    f"fetch_with_retry: {url} raised {type(exc).__name__}; "
+                    f"retry {attempt}/{max_retries} after {sleep_for:.1f}s."
+                )
+                time.sleep(sleep_for)
+            else:
+                raise
+
+    # Should not reach here, but just in case:
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("fetch_with_retry exhausted retries without a response")
 
 
 def clean_text(value: object | None) -> str:
@@ -97,3 +174,17 @@ def make_job(
 
 def absolute_url(base_url: str, href: str) -> str:
     return clean_text(urljoin(base_url, href))
+
+
+__all__ = [
+    "REQUEST_TIMEOUT",
+    "DEFAULT_HEADERS",
+    "JSON_HEADERS",
+    "utc_now_iso",
+    "fetch_with_retry",
+    "clean_text",
+    "html_to_text",
+    "source_slug",
+    "make_job",
+    "absolute_url",
+]

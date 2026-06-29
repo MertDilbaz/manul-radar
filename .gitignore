@@ -27,6 +27,8 @@ data/*.sqlite
 data/*.sqlite3
 data/*.backup-*
 data/jobs.db.backup-*
+# Debug HTML snapshots should never be committed
+data/*.html
 
 # Logs
 logs/
