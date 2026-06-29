@@ -9,7 +9,40 @@ clear deal-breakers, then uses scoring to rank opportunities:
 * junior/new-grad/support signals are strong bonuses, not mandatory gates;
 * senior / lead / management / non-target stacks are hard rejects;
 * explicit 4+ year experience requirements are hard rejects;
-* source/search terms only add a small boost after location + domain gates.
+* generic ``Software Engineer`` listings without stack signals are
+  *not* hard rejects but score low and are tagged ``low`` confidence
+  so Mert can see them without acting on them.
+
+The V2 scoring formula (added 2026-06-29) distinguishes between signal
+tiers instead of treating every ``include`` keyword as equal:
+
+* **strong** signals (java, spring boot, sql, backend, application
+  support, integration, junior, new grad, intern …) carry
+  ``strong_weight`` (default 25). Two or three of these already push a
+  junior-aimed posting past ``minimum_score``.
+* **weak / generic** signals (``software engineer``,
+  ``software developer``, ``yazılım mühendisi``) carry ``weak_weight``
+  (default 8). They contribute but cannot single-handedly clear the
+  threshold.
+* **location** keywords (``turkey``, ``istanbul``, ``remote türkiye``
+  …) carry ``location_weight`` (default 10).
+* **company boost** keywords (``commencis``, ``midas``, ``insider``
+  …) carry ``company_weight`` (default 10) so a generic SE listing
+  from a high-priority company still surfaces as ``low`` confidence
+  rather than disappearing entirely.
+* **mobile / iOS / Android / React Native** signals in the title or
+  description trigger ``mobile_penalty`` when there is no strong
+  backend / Java / support signal — the posting is *not* rejected
+  (mobile is not a hard exclude) but the score drops so it falls
+  below the threshold unless paired with backend / support.
+* **AI Software Engineer** without backend/java/support/junior
+  signals is down-weighted by ``generic_only_penalty`` and lands at
+  ``low`` confidence.
+
+The combination of weighted tiers + targeted penalties gives every
+relevant job a **confidence** label (``high`` / ``medium`` / ``low``)
+plus a short ``confidence_reasons`` list that the Telegram notifier
+renders directly to Mert.
 """
 from __future__ import annotations
 
@@ -17,7 +50,7 @@ import re
 
 from app.filters.job_text import normalize_text
 from app.models.job import Job
-from app.models.scored_job import ScoredJob
+from app.models.scored_job import Confidence, ScoredJob
 
 
 class JobScorer:
@@ -76,6 +109,20 @@ class JobScorer:
         location_required_keywords: list[str] | None = None,
         location_reject_keywords: list[str] | None = None,
         role_required_keywords: list[str] | None = None,
+        # ---- V2 tiered weights (optional, default to include_weight) ----
+        weak_keywords: list[str] | None = None,
+        strong_weight: int | None = None,
+        weak_weight: int = 8,
+        location_weight: int = 10,
+        company_boost_keywords: list[str] | None = None,
+        company_boost_weight: int = 10,
+        mobile_negative_keywords: list[str] | None = None,
+        mobile_penalty: int = 25,
+        generic_only_penalty: int = 25,
+        # ---- V2 confidence thresholds ----
+        high_confidence_min_score: int = 80,
+        high_confidence_min_strong: int = 1,
+        low_confidence_min_score: int = 40,
     ) -> None:
         self._include: list[str] = self._normalize_list(include_keywords)
         self._exclude: list[str] = self._normalize_list(exclude_keywords)
@@ -86,7 +133,27 @@ class JobScorer:
         self._location_required: list[str] = self._normalize_list(location_required_keywords or [])
         self._location_reject: list[str] = self._normalize_list(location_reject_keywords or [])
         self._role_required: list[str] = self._normalize_list(role_required_keywords or [])
+        # ---- V2 ----
+        self._weak: list[str] = self._normalize_list(weak_keywords or [])
+        self._company_boost: list[str] = self._normalize_list(company_boost_keywords or [])
+        self._mobile_negative: list[str] = self._normalize_list(mobile_negative_keywords or [])
+
         self._minimum_score: int = int(minimum_score)
+        # strong_weight defaults to include_weight for backward compatibility
+        self._strong_weight: int = (
+            int(strong_weight) if strong_weight is not None else int(include_weight)
+        )
+        self._weak_weight: int = int(weak_weight)
+        self._location_weight: int = int(location_weight)
+        self._company_boost_weight: int = int(company_boost_weight)
+        self._mobile_penalty: int = int(mobile_penalty)
+        self._generic_only_penalty: int = int(generic_only_penalty)
+        self._high_confidence_min_score: int = int(high_confidence_min_score)
+        self._high_confidence_min_strong: int = max(0, int(high_confidence_min_strong))
+        self._low_confidence_min_score: int = int(low_confidence_min_score)
+
+        # Back-compat: keep include_weight / exclude_weight / source_boost_weight
+        # attributes used by older callers / tests.
         self._include_weight: int = int(include_weight)
         self._exclude_weight: int = int(exclude_weight)
         self._source_boost_weight: int = int(source_boost_weight)
@@ -107,6 +174,14 @@ class JobScorer:
     @property
     def soft_exclude_keywords(self) -> tuple[str, ...]:
         return tuple(self._exclude)
+
+    @property
+    def weak_keywords(self) -> tuple[str, ...]:
+        return tuple(self._weak)
+
+    @property
+    def mobile_negative_keywords(self) -> tuple[str, ...]:
+        return tuple(self._mobile_negative)
 
     @staticmethod
     def _normalize_list(keywords: list[str]) -> list[str]:
@@ -180,6 +255,59 @@ class JobScorer:
                 deduped.append(reason)
         return deduped
 
+    def _split_strong_weak(self, include_matches: list[str]) -> tuple[list[str], list[str]]:
+        """Split matched include keywords into strong and weak buckets.
+
+        A keyword in both ``include_keywords`` and ``weak_keywords``
+        is treated as *weak* (its contribution is down-weighted). A
+        keyword in ``include_keywords`` only is treated as *strong*.
+        """
+        weak_set = set(self._weak)
+        strong: list[str] = []
+        weak: list[str] = []
+        for keyword in include_matches:
+            if keyword in weak_set:
+                weak.append(keyword)
+            else:
+                strong.append(keyword)
+        return strong, weak
+
+    def _confidence_for(
+        self,
+        *,
+        score: int,
+        strong_count: int,
+        junior_or_support_count: int,
+        mobile_penalty_applied: bool,
+        generic_only: bool,
+    ) -> tuple[Confidence, list[str]]:
+        """Decide the confidence tier and the human-readable reasons.
+
+        Returned tuple is ``(tier, reasons)``. The tier is always one
+        of ``"high"``, ``"medium"``, ``"low"`` when the job is
+        relevant. Reasons are short strings ready for Telegram output.
+        """
+        reasons: list[str] = []
+        if score >= self._high_confidence_min_score and strong_count >= self._high_confidence_min_strong:
+            if junior_or_support_count > 0:
+                reasons.append("güçlü sinyal: stack + junior veya destek")
+                return "high", reasons
+            reasons.append("güçlü sinyal: stack eşleşmesi")
+            return "high", reasons
+        if strong_count == 0:
+            reasons.append("sadece genel başlık sinyali")
+            if generic_only:
+                reasons.append("backend/java/destek/junior sinyali yok")
+            return "low", reasons
+        if mobile_penalty_applied and score >= self._minimum_score:
+            reasons.append("mobil sinyali var ama backend/java desteği dengeledi")
+            return "medium", reasons
+        if junior_or_support_count > 0 and strong_count >= 1:
+            reasons.append("orta güven: stack + junior veya destek")
+            return "medium", reasons
+        reasons.append("orta güven: stack eşleşmesi var")
+        return "medium", reasons
+
     def score(self, job: Job) -> ScoredJob:
         """Score ``job`` and return a new ``ScoredJob`` wrapping it."""
         content_text = self._content_text(job)
@@ -200,6 +328,11 @@ class JobScorer:
         soft_excluded = self._match_keywords(content_text, self._exclude)
         matched = self._match_keywords(content_text, self._include)
 
+        # ---- V2 tiered scoring ----
+        strong_matched, weak_matched = self._split_strong_weak(matched)
+        company_boost_matches = self._match_keywords(source_text, self._company_boost)
+        mobile_negative_matches = self._match_keywords(content_text, self._mobile_negative)
+
         location_reasons: list[str] = []
         if self._location_required and not location_matches:
             location_reasons.append("location:not_turkey")
@@ -210,20 +343,26 @@ class JobScorer:
         if self._domain_required and not domain_matches:
             domain_reasons.append("domain:no_technology_signal")
 
-        # Role/entry-level/support signals are bonuses. They are intentionally
-        # not hard gates because many Turkish software postings are simply
-        # titled "Yazılım Geliştirici", "Yazılım Uzmanı" or
-        # "Application Support Specialist" without saying junior/new-grad.
         role_reasons: list[str] = []
 
         non_target_reasons: list[str] = []
-        # Non-target departments in the title are hard rejects. In the
-        # description they are useful debug signals, but do not reject a valid
-        # tech/support posting by themselves.
         if title_non_target_matches:
             non_target_reasons.extend(f"non_target:{kw}" for kw in title_non_target_matches[:5])
         elif not domain_matches:
             non_target_reasons.extend(f"non_target:{kw}" for kw in non_target_matches[:5])
+
+        # V2: penalise but do not hard-reject mobile postings without
+        # any strong backend / Java / support signal. Hard rejection
+        # is reserved for senior / lead / management / non-target stacks.
+        mobile_penalty_applied = bool(
+            mobile_negative_matches and not strong_matched and not role_matches
+        )
+        # V2: penalise postings whose only positive signals are weak /
+        # generic (e.g. just "Software Engineer" without any specific
+        # stack or support keywords). The penalty nudges them below
+        # the minimum score; high-priority companies still surface
+        # them via the company boost + low_confidence tier.
+        generic_only = bool(weak_matched and not strong_matched and not role_matches)
 
         source_matches: list[str] = []
         if domain_matches and location_matches:
@@ -242,6 +381,11 @@ class JobScorer:
             + role_reasons
             + non_target_reasons
         )
+        if mobile_penalty_applied:
+            excluded.append("mobile:no_backend_signal")
+        if generic_only:
+            excluded.append("generic_only:no_strong_signal")
+
         hard_rejected = bool(
             location_reasons
             or domain_reasons
@@ -251,16 +395,64 @@ class JobScorer:
             or experience_excluded
         )
 
+        # --- score formula (V2) ---
         score_value = (
-            self._include_weight * len(matched)
-            + self._include_weight * len(role_matches)
-            + self._include_weight * len(entry_experience_matches)
+            self._strong_weight * len(strong_matched)
+            + self._weak_weight * len(weak_matched)
+            + self._location_weight * len(location_matches)
+            + self._company_boost_weight * len(company_boost_matches)
             + self._source_boost_weight * len(source_matches)
+            + self._strong_weight * len(role_matches)
+            + self._strong_weight * len(entry_experience_matches)
             - self._exclude_weight * len(soft_excluded)
             - self._exclude_weight * len(hard_excluded)
             - self._exclude_weight * len(experience_excluded)
+            - (self._mobile_penalty if mobile_penalty_applied else 0)
+            - (self._generic_only_penalty if generic_only else 0)
         )
         relevant = (not hard_rejected) and score_value >= self._minimum_score
+
+        # --- confidence tier (only meaningful for relevant jobs) ---
+        confidence: Confidence | str = ""
+        confidence_reasons: list[str] = []
+        if relevant:
+            # Junior OR support signal — counts towards high confidence.
+            junior_or_support_count = sum(
+                1 for keyword in (role_matches + entry_experience_matches)
+                if any(t in keyword for t in (
+                    "junior",
+                    "new grad",
+                    "new graduate",
+                    "fresh graduate",
+                    "trainee",
+                    "intern",
+                    "stajyer",
+                    "yeni mezun",
+                    "yetistirilmek",
+                    "yetiştirilmek",
+                    "uzman yardimcisi",
+                    "uzman yardımcısı",
+                    "asistan",
+                    "application support",
+                    "uygulama destek",
+                    "yazilim destek",
+                    "yazılım destek",
+                    "sql destek",
+                    "erp destek",
+                    "entegrasyon destek",
+                    "integration support",
+                    "implementation support",
+                    "support",
+                    "destek",
+                ))
+            )
+            confidence, confidence_reasons = self._confidence_for(
+                score=score_value,
+                strong_count=len(strong_matched),
+                junior_or_support_count=junior_or_support_count,
+                mobile_penalty_applied=mobile_penalty_applied,
+                generic_only=generic_only,
+            )
 
         combined_matched: list[str] = []
         seen_matched: set[str] = set()
@@ -269,8 +461,10 @@ class JobScorer:
             + domain_matches
             + role_matches
             + entry_experience_matches
-            + matched
+            + strong_matched
+            + weak_matched
             + source_matches
+            + company_boost_matches
         ):
             if value in seen_matched:
                 continue
@@ -283,6 +477,8 @@ class JobScorer:
             matched_keywords=combined_matched,
             excluded_keywords=excluded,
             relevant=relevant,
+            confidence=confidence,
+            confidence_reasons=confidence_reasons,
         )
 
 

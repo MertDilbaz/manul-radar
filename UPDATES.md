@@ -4,6 +4,88 @@ Bu dosya session bazlı özet tutar. Her büyük değişiklik turundan sonra gü
 
 ---
 
+## 2026-06-29 — Scoring V2: tiered weights + confidence + exclusive buckets
+
+**Sorun:** Mert production run'da 5 ilan "uygun" olarak Telegram'a geldi:
+
+- AI Software Engineer — Commencis — score 40
+- Software Engineer — Midas — score 40
+- Software Engineer, iOS — Midas — score 40
+- AI Software Engineer - Remote — Insider — score 40
+- Software Engineer — iyzico — score 40
+
+Generic "Software Engineer" + Türkiye filtresi 40 puan alıp geçiyordu. Junior+Java+SQL ile Application Support+SQL hiçbir farkı yoktu — hepsi aynı sepette. iOS/Mobile ilanları da bu sepete giriyordu. AI Software Engineer özel olarak değerlendirilmiyordu.
+
+Ek olarak Telegram sayaçları overlap yapıyordu: 196 ilan taranırken, "elenen" sayaçları (location + domain + experience + ...) toplamı 196'yı aşıyordu — çünkü bir ilan birden fazla sebeple elenebiliyor ve her birine ayrı sayaç artıyordu.
+
+**Çözüm — 4 katmanlı V2:**
+
+1. **Tiered keyword weights** (`JobScorer` + `config.yaml`):
+   - `strong_weight = 25`: java, spring boot, backend, sql, application support, integration, junior, new grad, intern vb.
+   - `weak_weight = 8`: software engineer, software developer, yazılım mühendisi, ai software engineer vb.
+   - `location_weight = 10`: turkey, istanbul, ankara, izmir, manisa, remote türkiye vb.
+   - `company_boost_weight = 10`: commencis, midas, insider, iyzico vb. (high-priority şirketler)
+   - `include_keywords`'ta olup `weak_keywords`'ta da olanlar **weak** olarak değerlendirilir; geri kalanlar **strong**.
+
+2. **Penalty'ler**:
+   - `mobile_penalty = 25`: iOS, Android, React Native, Flutter vb. varsa VE strong backend/java/support sinyali yoksa uygulanır. Hard reject değil, skor eşiğin altına iter (high-priority şirket + mobile varsa düşük güvenle gösterilebilir).
+   - `generic_only_penalty = 25`: sadece weak sinyalleri varsa (ör. sadece "Software Engineer") ve başka stack/junior/destek sinyali yoksa uygulanır.
+
+3. **Confidence tier** (`ScoredJob.confidence`): Her relevant ilan için **high / medium / low** etiketi + `confidence_reasons` listesi atanır:
+   - `high`: score >= 80 + en az 1 strong sinyal + junior veya support sinyali varsa.
+   - `medium`: score >= 60 + strong sinyal varsa (junior olmasa bile).
+   - `low`: score >= 40 + sadece weak/generic sinyaller varsa.
+   - `low_confidence_generic_software` gibi reason'lar confidence_reasons'a eklenir.
+
+4. **Exclusive reject buckets** (`JobMonitorStats`): Her rejected job artık **tek bir bucket**'a düşer (priority: location > domain > experience > hard > non_target > mobile > role > generic_only > score). Per-bucket sayaç toplamı artık `rejected_total`'a eşit — Telegram summary artık mantıklı.
+
+**Yeni `minimum_score = 60`** (eskiden 40). Senior / 5+ yıl / non-Türkiye hâlâ hard reject.
+
+**Telegram formatı** her job kartında artık şu var:
+
+```
+1) AI Software Engineer
+🏢 Commencis
+📍 Istanbul, Turkey | Çalışma: Hybrid
+⭐ Skor: 83 | Güven: 🔴 düşük
+✅ Eşleşenler: istanbul, turkey, software engineer, commencis
+💡 Neden: sadece genel başlık sinyali
+🔗 İlanı Aç
+```
+
+Summary bölümünde:
+- 🎯 Güven dağılımı: 🟢 yüksek X, 🟡 orta Y, 🔴 düşük Z
+- 🚫 Elenen toplam: N (toplam = per-bucket toplamı)
+- Bucket'lar: lokasyon, no_domain, experience+hard, non_target, mobile, role, generic_only, score
+
+**Değişen dosyalar:**
+
+- `app/models/scored_job.py` — `confidence: str` + `confidence_reasons: list[str]` alanları.
+- `app/filters/job_scorer.py` — V2 tiered weights + penalties + confidence tier. Geriye dönük uyumlu: eski parametreler (`include_weight` vs) aynen çalışır, yeni parametreler opsiyonel.
+- `app/services/job_monitor_service.py` — `_count_rejection` artık **exclusive**; her job tek bucket. Yeni alanlar: `rejected_mobile`, `rejected_generic_only`. Eski `_has_prefix`/`_has_any` helper'ları kaldırıldı (private'dı).
+- `app/notifier/telegram_notifier.py` — Job kartında `Güven: 🟢/🟡/🔴 <label>` + `Neden: <reasons>`. Summary'de `Güven dağılımı` satırı + bucket'lar "filtre nedenleri" olarak yeniden adlandırıldı.
+- `app/config/config.yaml` — `minimum_score: 60`, `weak_keywords`, `company_boost_keywords`, `mobile_negative_keywords` listeleri + V2 tiered weight ayarları.
+- `run_monitor.py` + `main.py` — `_build_scorer` yeni V2 parametreleri okuyacak şekilde güncellendi.
+- `tests/smoke_run_monitor.py` — `_run_monitor_in_temp_env` helper'ı `MANUL_ENABLE_TELEGRAM_SEND` env var'ı ekleyecek şekilde güncellendi. `_check_use_dummy_source_routes_to_dummy` + `_check_use_dummy_source_dedup_on_second_run` testleri dummy mode'un Telegram skip ettiğini (yeni guard semantiği) DB satır sayısı üzerinden doğruluyor.
+- `tests/smoke_scoring_v2.py` — yeni (17 OK): junior java high, SQL support high, generic SE low/reject, company boost delta, iOS penalty (mobile + balanced), AI engineer low, senior hard reject, 5+ years reject, non-Turkey reject, **exclusive buckets sum + each-bucket-one**.
+- `scripts/simulate_v2_real_jobs.py` — yeni, Mert'in gerçek run'ındaki 7 ilanı simüle eden dry-run aracı. **Junior Java Backend Developer → high (233), Application Support Specialist (SQL) → high (165), generic SE/AI SE → low (73-83).**
+
+**Doğrulama (tüm smoke testler):**
+
+- `python tests/smoke_job_scorer_policy.py` → `ALL_SCORER_POLICY_OK` (9 OK)
+- `python tests/smoke_telegram_notifier.py` → `ALL_TELEGRAM_OK` (10 OK)
+- `python tests/smoke_run_monitor_guards.py` → `RUN_MONITOR_GUARDS_OK` (24 OK)
+- `python tests/smoke_ats_sources.py` → `ATS_SOURCES_SMOKE_OK` (19 OK)
+- `python tests/smoke_run_monitor.py` → `ALL_RUN_MONITOR_OK` (9 OK)
+- `python tests/smoke_scoring_v2.py` → `ALL_SCORING_V2_OK` (17 OK)
+- `python scripts/simulate_v2_real_jobs.py` → real production jobs ile V2 davranışı doğrulandı
+
+**Toplam: 88 OK / 0 FAIL.** Mevcut Telegram guard + source parser davranışı bozulmadı.
+
+**Sonraki adım:** Production'da bir workflow_dispatch run daha tetikle, Mert yeni Telegram çıktısını görsün. Junior Java + Application Support **high 🟢**, generic SE / AI SE / iOS-Android **low 🔴** etiketiyle gelecek. Onaylarsa Sprint 2'ye (yeni source/parser ekleme) geçeriz.
+
+---
+
 ## 2026-06-29 — Production Telegram safety guards
 
 **Sorun:** Mert GH Actions'ta `python run_monitor.py` çalıştırdığında 13:03, 13:06, 13:18 saatlerinde (cron + workflow_dispatch + bir tuhaf gecikme) bildirim almış. Zamanlama şüphesi + dummy-looking içerik → "production'da dummy source mu kullanılıyor?" endişesi.

@@ -11,12 +11,31 @@ notification:
   send_empty_report: true
   empty_message: Günaydın Mert. Bugün filtrelerine uygun yeni iş ilanı bulamadım.
 scoring:
-  minimum_score: 40
+  minimum_score: 60
   include_weight: 20
   exclude_weight: 40
   source_boost_weight: 8
   hard_exclude_experience_years: 4
   debug_top_rejected: 20
+  # ---- V2 tiered weights (2026-06-29) ----
+  # strong_weight: per matched "specific stack" keyword (java, sql, backend, …).
+  strong_weight: 25
+  # weak_weight: per matched "generic" keyword (software engineer alone, …).
+  weak_weight: 8
+  # Per matched location keyword (turkey, istanbul, remote türkiye, …).
+  location_weight: 10
+  # Per matched high-priority company keyword (commencis, midas, insider, …).
+  company_boost_weight: 10
+  # Applied when iOS / mobile / android / react native appears without any
+  # strong backend / Java / support signal. Mobile is not a hard reject;
+  # it just drops the score below the threshold unless paired with stack.
+  mobile_penalty: 25
+  # Applied when the only positive signals are weak / generic (e.g. just
+  # "Software Engineer" without backend/java/support/junior).
+  generic_only_penalty: 25
+  high_confidence_min_score: 80
+  high_confidence_min_strong: 1
+  low_confidence_min_score: 40
 keywords:
   domain_required:
   - java
@@ -220,6 +239,89 @@ keywords:
   - developer
   - geliştirici
   - gelistirici
+  # ---- V2 weak / generic keywords (2026-06-29) ----
+  # Keywords listed here are still considered positive but count at
+  # the lower ``weak_weight`` (default 8) so a "Software Engineer"
+  # listing without any specific stack signal cannot single-handedly
+  # clear the minimum_score=60 threshold.
+  weak_keywords:
+  - software engineer
+  - software developer
+  - backend engineer
+  - backend developer
+  - yazılım mühendisi
+  - yazilim muhendisi
+  - yazılım geliştirici
+  - yazilim gelistirici
+  - yazılım geliştirme
+  - yazilim gelistirme
+  - bilgi teknolojileri uzmanı
+  - bilgi teknolojileri uzmani
+  - it specialist
+  - it support specialist
+  - technical support specialist
+  - associate software engineer
+  - associate software developer
+  - associate backend engineer
+  - graduate software engineer
+  - graduate software developer
+  - entry level software
+  - entry level developer
+  - entry-level software
+  - entry-level developer
+  - ai software engineer
+  - ai software developer
+  - yapay zeka yazılım
+  - yapay zeka yazilim
+  - artificial intelligence engineer
+  - artificial intelligence developer
+  - machine learning engineer
+  - ml engineer
+  - data engineer
+  # ---- V2 company boost keywords (2026-06-29) ----
+  # High-priority Turkey-based tech companies whose postings get an
+  # extra nudge so a generic "Software Engineer" listing still
+  # surfaces at low_confidence instead of disappearing.
+  company_boost_keywords:
+  - kafein technology solutions
+  - rapsodo
+  - oredata
+  - sanction scanner
+  - commencis
+  - midas
+  - getmidas
+  - insider
+  - insiderone
+  - iyzico
+  - param
+  - papara
+  - logo
+  - logo yazılım
+  - logo yazilim
+  - innova
+  - ziraat teknoloji
+  # ---- V2 mobile negative keywords (2026-06-29) ----
+  # Posts whose title or description matches one of these but contains
+  # no strong backend / Java / support signal get the ``mobile_penalty``
+  # applied. Not a hard reject — the posting is allowed through if it
+  # still passes minimum_score with the penalty.
+  mobile_negative_keywords:
+  - ios developer
+  - ios engineer
+  - ios
+  - android developer
+  - android engineer
+  - android
+  - mobile developer
+  - mobile engineer
+  - mobile application
+  - mobile uygulama
+  - mobil uygulama
+  - react native
+  - flutter
+  - swift
+  - kotlin
+  - objective-c
   source_boost:
   - java
   - spring

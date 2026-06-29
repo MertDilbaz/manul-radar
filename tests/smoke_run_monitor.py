@@ -142,6 +142,7 @@ def _run_monitor_in_temp_env(
     *,
     telegram_token: str | None = None,
     chat_id: str | None = None,
+    telegram_send_enabled: bool = True,
     fetch_jobs_returns=None,
     fake_post: _FakePost | None = None,
     argv: list[str] | None = None,
@@ -153,6 +154,12 @@ def _run_monitor_in_temp_env(
     ``argv`` is an optional list of CLI args to forward to argparse
     inside ``run_monitor.main``. Defaults to no args (i.e. an empty
     ``sys.argv``) so existing callers don't need to change.
+
+    ``telegram_send_enabled`` defaults to ``True`` so the Telegram
+    tests can drive the notifier end-to-end; the production guard
+    (``MANUL_ENABLE_TELEGRAM_SEND``) is set to ``"true"`` accordingly.
+    Pass ``False`` to verify the runner refuses to send when the
+    env opt-in is absent.
     """
     import requests
     from app.sources.greenhouse_source import GreenhouseSource
@@ -169,6 +176,8 @@ def _run_monitor_in_temp_env(
         env_overrides["TELEGRAM_BOT_TOKEN"] = telegram_token
     if chat_id is not None:
         env_overrides["TELEGRAM_CHAT_ID"] = chat_id
+    if telegram_send_enabled:
+        env_overrides["MANUL_ENABLE_TELEGRAM_SEND"] = "true"
 
     post = fake_post if fake_post is not None else _FakePost()
 
@@ -177,11 +186,14 @@ def _run_monitor_in_temp_env(
         # have set, so the "no env" test stays deterministic.
         os.environ.pop("TELEGRAM_BOT_TOKEN", None)
         os.environ.pop("TELEGRAM_CHAT_ID", None)
+        os.environ.pop("MANUL_ENABLE_TELEGRAM_SEND", None)
         # Re-apply if requested, *after* the pop.
         if telegram_token is not None:
             os.environ["TELEGRAM_BOT_TOKEN"] = telegram_token
         if chat_id is not None:
             os.environ["TELEGRAM_CHAT_ID"] = chat_id
+        if telegram_send_enabled:
+            os.environ["MANUL_ENABLE_TELEGRAM_SEND"] = "true"
 
         # Forward CLI args to run_monitor's argparse. Use a list that
         # always starts with a synthetic program name so argparse
@@ -543,13 +555,11 @@ def _check_use_dummy_source_routes_to_dummy() -> None:
     """``--use-dummy-source`` must cause the monitor to consult
     ``DummySource`` (and not ``HrPeakSource``).
 
-    We assert this by *not* monkeypatching ``HrPeakSource`` in
-    the helper — if the wrong source is selected the real Kafein
-    ``fetch_jobs`` is called and ``requests.post`` never gets hit
-    (Kafein would either fail or, more dangerously, hit the live
-    site). Instead we monkeypatch ``DummySource.fetch_jobs`` to a
-    sentinel return so we can observe the routing indirectly via
-    the resulting send calls.
+    V2 semantics (2026-06-29): dummy mode is now a Telegram hard-stop,
+    so the post-call counter must be ``0`` — but the monitor still
+    runs, scores, and persists. We assert by inspecting the DB
+    (proves the routing worked) and by checking the post-call count
+    (proves the Telegram guard fired).
     """
     from app.sources.dummy_source import DummySource
 
@@ -573,20 +583,28 @@ def _check_use_dummy_source_routes_to_dummy() -> None:
                 f"expected exit 0, got {exit_code}",
             )
             return
-        # DummySource returns 3 jobs, 2 are relevant -> summary + one page.
-        # (Same contract as the realistic_jobs path, just routed via
-        # DummySource.fetch_jobs instead of Kafein.)
-        if len(post.calls) != 2:
+        # V2: dummy mode refuses to call Telegram even when the guard
+        # is set. The send counter must therefore be 0.
+        if len(post.calls) != 0:
             _record(
                 "USE_DUMMY_ROUTE_CALLS",
                 False,
-                f"expected 2 digest page sends from dummy source, got {len(post.calls)}",
+                f"expected 0 telegram sends in dummy mode, got {len(post.calls)}",
+            )
+            return
+        # The DB should still be populated — DummySource returns 3 jobs,
+        # 2 are relevant, both should be persisted.
+        if _count_rows(db_path) != 2:
+            _record(
+                "USE_DUMMY_ROUTE_DB",
+                False,
+                f"expected 2 persisted rows from dummy source, got {_count_rows(db_path)}",
             )
             return
         _record(
             "USE_DUMMY_ROUTE",
             True,
-            "--use-dummy-source routes through DummySource -> 2 digest page sends",
+            "--use-dummy-source routes through DummySource -> 2 DB rows, 0 telegram sends",
         )
     finally:
         try:
@@ -597,11 +615,12 @@ def _check_use_dummy_source_routes_to_dummy() -> None:
 
 def _check_use_dummy_source_dedup_on_second_run() -> None:
     """End-to-end: first run with --use-dummy-source on a fresh DB
-    produces 2 new relevant jobs and 2 digest page sends; the same DB on a
-    second run produces 0 new and 1 empty-report send.
+    produces 2 new relevant jobs persisted to SQLite; the same DB on a
+    second run produces 0 new relevant jobs.
 
-    This is the spec's "İlk çalıştırmada 2 / ikinci çalıştırmada 0"
-    guarantee, validated end-to-end (source swap + persist + send).
+    V2 (2026-06-29): dummy mode refuses to call Telegram, so the
+    send counter must be ``0`` on both runs. We assert the dedup
+    contract via the DB instead.
     """
     db_path, tmp = _make_temp_db_path()
     try:
@@ -611,31 +630,40 @@ def _check_use_dummy_source_dedup_on_second_run() -> None:
             chat_id="999",
             argv=["--use-dummy-source"],
         )
+        first_rows = _count_rows(db_path)
         _, post2 = _run_monitor_in_temp_env(
             db_path=db_path,
             telegram_token="FAKE_BOT_TOKEN",
             chat_id="999",
             argv=["--use-dummy-source"],
         )
+        second_rows = _count_rows(db_path)
 
-        if len(post1.calls) != 2:
+        if len(post1.calls) != 0 or len(post2.calls) != 0:
+            _record(
+                "USE_DUMMY_DEDUP_SENDS",
+                False,
+                f"dummy mode must never call Telegram: post1={len(post1.calls)}, post2={len(post2.calls)}",
+            )
+            return
+        if first_rows != 2:
             _record(
                 "USE_DUMMY_DEDUP_FIRST",
                 False,
-                f"first run expected 2 digest page sends, got {len(post1.calls)}",
+                f"first run expected 2 DB rows, got {first_rows}",
             )
             return
-        if len(post2.calls) != 1:
+        if second_rows != 2:
             _record(
                 "USE_DUMMY_DEDUP_SECOND",
                 False,
-                f"second run expected 1 empty-report send, got {len(post2.calls)}",
+                f"second run expected 2 DB rows (no growth), got {second_rows}",
             )
             return
         _record(
             "USE_DUMMY_DEDUP",
             True,
-            "first=2 digest page sends, second=1 empty-report send on same DB",
+            "first=2 DB rows (no telegram), second=2 DB rows unchanged, 0 telegram sends",
         )
     finally:
         try:

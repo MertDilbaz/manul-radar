@@ -12,7 +12,16 @@ from app.utils.logger import logger
 
 @dataclass
 class JobMonitorStats:
-    """Operational counters from the most recent monitor run."""
+    """Operational counters from the most recent monitor run.
+
+    V2 semantics (2026-06-29): rejection counters are now **exclusive**
+    — every rejected job is counted in exactly one bucket based on its
+    primary reject reason (location > domain > experience > hard >
+    non-target > mobile > role > generic-only > score). The total of
+    the per-bucket counters therefore equals ``rejected_total``
+    instead of exceeding it, which makes the Telegram summary easier
+    to read.
+    """
 
     source_count: int = 0
     total_seen: int = 0
@@ -26,7 +35,8 @@ class JobMonitorStats:
     rejected_non_target: int = 0
     rejected_hard: int = 0
     rejected_experience: int = 0
-    rejected_soft: int = 0
+    rejected_mobile: int = 0
+    rejected_generic_only: int = 0
     rejected_score: int = 0
     source_errors: int = 0
     source_error_names: list[str] = field(default_factory=list)
@@ -34,6 +44,21 @@ class JobMonitorStats:
 
 class JobMonitorService:
     """Run all sources through the scorer and optional repository."""
+
+    # Priority order used by ``_primary_reject_reason``: a rejected job
+    # is bucketed into the highest-priority bucket that applies. This
+    # is what makes the per-bucket counters sum to ``rejected_total``.
+    _REJECT_PRIORITY: tuple[str, ...] = (
+        "location",
+        "domain",
+        "experience",
+        "hard",
+        "non_target",
+        "mobile",
+        "role",
+        "generic_only",
+        "score",
+    )
 
     def __init__(
         self,
@@ -62,38 +87,59 @@ class JobMonitorService:
         needle_set = set(needles)
         return any(value in needle_set for value in values)
 
-    def _count_rejection(self, stats: JobMonitorStats, scored: ScoredJob) -> None:
+    def _primary_reject_reason(self, scored: ScoredJob) -> str:
+        """Return the highest-priority reject bucket for ``scored``.
+
+        The order matches ``_REJECT_PRIORITY`` and the prefixes used by
+        :class:`app.filters.job_scorer.JobScorer`.
+        """
         excluded = list(scored.excluded_keywords or [])
-        hard_keywords = getattr(self._scorer, "hard_exclude_keywords", tuple())
-        soft_keywords = getattr(self._scorer, "soft_exclude_keywords", tuple())
+        hard_keywords = set(getattr(self._scorer, "hard_exclude_keywords", tuple()))
 
-        has_domain = self._has_prefix(excluded, "domain:no_technology_signal")
-        has_location = self._has_prefix(excluded, "location:")
-        has_role = self._has_prefix(excluded, "role:")
-        has_non_target = self._has_prefix(excluded, "non_target:")
-        has_experience = self._has_prefix(excluded, "experience:")
-        has_hard = self._has_any(excluded, hard_keywords)
-        has_soft = self._has_any(excluded, soft_keywords)
+        if self._has_prefix(excluded, "location:"):
+            return "location"
+        if self._has_prefix(excluded, "domain:"):
+            return "domain"
+        if self._has_prefix(excluded, "experience:"):
+            return "experience"
+        if any(value in hard_keywords for value in excluded):
+            return "hard"
+        if self._has_prefix(excluded, "non_target:"):
+            return "non_target"
+        if self._has_prefix(excluded, "mobile:"):
+            return "mobile"
+        if self._has_prefix(excluded, "role:"):
+            return "role"
+        if self._has_prefix(excluded, "generic_only:"):
+            return "generic_only"
+        return "score"
 
-        if has_domain:
-            stats.rejected_no_domain += 1
-        if has_location:
+    def _count_rejection(self, stats: JobMonitorStats, scored: ScoredJob) -> None:
+        """Increment exactly one reject bucket per rejected job.
+
+        This is the V2 contract: each rejected job is counted once,
+        under its highest-priority reject reason. The per-bucket sum
+        always equals ``rejected_total`` so the Telegram summary no
+        longer adds up to a number larger than the total.
+        """
+        reason = self._primary_reject_reason(scored)
+        if reason == "location":
             stats.rejected_location += 1
-        if has_role:
-            stats.rejected_role += 1
-        if has_non_target:
-            stats.rejected_non_target += 1
-        if has_experience:
+        elif reason == "domain":
+            stats.rejected_no_domain += 1
+        elif reason == "experience":
             stats.rejected_experience += 1
-        if has_hard:
+        elif reason == "hard":
             stats.rejected_hard += 1
-        if has_soft:
-            stats.rejected_soft += 1
-
-        # Score rejection means the posting passed hard/domain/experience gates
-        # but still did not reach the minimum score. This is the most important
-        # bucket for calibration.
-        if not (has_domain or has_location or has_role or has_experience or has_hard or has_non_target):
+        elif reason == "non_target":
+            stats.rejected_non_target += 1
+        elif reason == "mobile":
+            stats.rejected_mobile += 1
+        elif reason == "role":
+            stats.rejected_role += 1
+        elif reason == "generic_only":
+            stats.rejected_generic_only += 1
+        else:
             stats.rejected_score += 1
 
     def _remember_rejected_candidate(
@@ -110,7 +156,8 @@ class JobMonitorService:
         rejected_candidates.append(scored)
 
     @staticmethod
-    def _primary_reject_reason(scored: ScoredJob) -> str:
+    def _primary_reject_reason_legacy(scored: ScoredJob) -> str:
+        """Return a short human-readable reject reason for log output."""
         excluded = list(scored.excluded_keywords or [])
         if any(value.startswith("location:") for value in excluded):
             return "location"
@@ -120,6 +167,12 @@ class JobMonitorService:
             return "role"
         if any(value.startswith("experience:") for value in excluded):
             return "experience"
+        if any(value.startswith("non_target:") for value in excluded):
+            return "non_target"
+        if any(value.startswith("mobile:") for value in excluded):
+            return "mobile_no_backend"
+        if any(value.startswith("generic_only:") for value in excluded):
+            return "generic_only"
         if excluded:
             return ", ".join(excluded[:3])
         return "score_below_threshold"
@@ -134,9 +187,11 @@ class JobMonitorService:
         for index, scored in enumerate(self.last_rejected_candidates, start=1):
             matched = ", ".join((scored.matched_keywords or [])[:8]) or "-"
             excluded = ", ".join((scored.excluded_keywords or [])[:8]) or "-"
+            confidence = scored.confidence or "-"
             logger.info(
                 f"  REJECTED[{index}] score={scored.score} "
-                f"reason={self._primary_reject_reason(scored)} | "
+                f"reason={self._primary_reject_reason_legacy(scored)} "
+                f"confidence={confidence} | "
                 f"[{scored.job.source}] {scored.job.title} @ {scored.job.company} | "
                 f"matched={matched} | excluded={excluded} | url={scored.job.url}"
             )
@@ -210,17 +265,21 @@ class JobMonitorService:
             if stats.source_errors
             else ""
         )
+        # Per-bucket counters are now exclusive and sum to rejected_total,
+        # so the summary reads naturally: "X rejected (Y because …, Z
+        # because …)" instead of "X rejected (X+Y+Z+… > X)".
         logger.info(
             f"JobMonitorService completed: {stats.new_relevant} new relevant "
             f"out of {stats.total_seen} total{repo_summary}; "
             f"rejected={stats.rejected_total} "
             f"(location={stats.rejected_location}, "
             f"no_domain={stats.rejected_no_domain}, "
-            f"role={stats.rejected_role}, "
-            f"non_target={stats.rejected_non_target}, "
-            f"hard={stats.rejected_hard}, "
             f"experience={stats.rejected_experience}, "
-            f"soft={stats.rejected_soft}, "
+            f"hard={stats.rejected_hard}, "
+            f"non_target={stats.rejected_non_target}, "
+            f"mobile={stats.rejected_mobile}, "
+            f"role={stats.rejected_role}, "
+            f"generic_only={stats.rejected_generic_only}, "
             f"score={stats.rejected_score})"
             f"{source_error_summary}."
         )
