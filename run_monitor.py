@@ -508,15 +508,26 @@ def main() -> int:
                 stats=service.last_run_stats,
                 empty_message=empty_message,
                 send_empty_report=send_empty_report,
+                with_buttons=True,
             )
 
-            for index, message in enumerate(messages, start=1):
+            for index, item in enumerate(messages, start=1):
+                # With buttons=True, each item is (text, inline_keyboard)
+                if isinstance(item, tuple):
+                    msg_text, keyboard = item
+                else:
+                    msg_text, keyboard = item, []
                 try:
-                    notifier.send_message(message, parse_mode="HTML")
+                    if keyboard:
+                        notifier.send_message_with_buttons(
+                            msg_text, inline_keyboard=keyboard
+                        )
+                    else:
+                        notifier.send_message(msg_text, parse_mode="HTML")
                     sent += 1
                     logger.info(
                         f"    -> Telegram digest page sent "
-                        f"({index}/{len(messages)})."
+                        f"({index}/{len(messages)}){' with buttons' if keyboard else ''}."
                     )
                 except Exception as exc:  # noqa: BLE001 — one bad send must not abort the batch
                     failed += 1

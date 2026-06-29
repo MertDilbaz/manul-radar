@@ -1,25 +1,24 @@
 """Parser registry — maps ``parser`` config keys to source factory functions.
 
-Before this module existed, ``run_monitor._build_sources_from_config``
-contained a 10-branch ``if parser == "hrpeak" / elif parser == ...``
-chain. Every new parser required editing that function, violating the
-Open/Closed Principle. This registry replaces the chain with a simple
-dictionary lookup: adding a new parser is now a matter of adding one
-entry to ``PARSER_REGISTRY`` (or calling :func:`register_parser`).
+Before this module existed, ``run_monitor._build_sources_from_config`` contained
+a 10-branch ``if parser == "hrpeak" / elif parser == ...`` chain. Every new
+parser required editing that function, violating the Open/Closed Principle.
+This registry replaces the chain with a simple dictionary lookup: adding a new
+parser is now a matter of adding one entry to :data:`PARSER_REGISTRY`.
 
-Each factory receives the raw config ``entry`` dict and the pre-parsed
-common fields (``company``, ``name``, ``url``) so it can pull parser-
-specific keys (``board_token``, ``company_slug``, ``account``, …)
-without repeating the boilerplate extraction.
+Each factory receives the raw config ``entry`` dict and the pre-parsed common
+fields (``company``, ``name``, ``url``) so it can pull parser-specific keys
+(``board_token``, ``company_slug``, ``account``, ``keywords`` …) without
+repeating the boilerplate extraction.
 """
 from __future__ import annotations
 
 from app.sources.base_source import BaseSource
-from app.sources.dummy_source import DummySource
 from app.sources.greenhouse_source import GreenhouseSource
 from app.sources.hirex_source import HirexSource
 from app.sources.hrpeak_source import HrPeakSource
 from app.sources.kariyer_net_source import KariyerNetSource
+from app.sources.linkedin_source import LinkedInSource
 from app.sources.lever_source import LeverSource
 from app.sources.peoplise_source import PeopliseSource
 from app.sources.smartrecruiters_source import SmartRecruitersSource
@@ -150,9 +149,29 @@ def _build_zoho_recruit(entry: dict, *, company: str, name: str, url: str) -> Ba
     )
 
 
-#: Maps ``parser`` config key to ``(factory_fn, display_suffix)``.
-#: The ``display_suffix`` is used in the "Registered source" log line
-#: so the operator sees a meaningful identifier per source.
+def _build_linkedin(entry: dict, *, company: str, name: str, url: str) -> BaseSource:
+    """Build a LinkedIn guest-API source from a config entry.
+
+    Unlike the company-board parsers, LinkedIn is keyword-scoped: the
+    config entry supplies ``keywords`` (required) and ``location``
+    (optional, defaults to "Turkey"). The ``company``/``url`` common
+    fields are ignored here.
+    """
+    keywords = str(entry.get("keywords") or "").strip()
+    if not keywords:
+        raise ValueError("linkedin requires keywords")
+    location = str(entry.get("location") or "Turkey").strip() or "Turkey"
+    return LinkedInSource(
+        keywords=keywords,
+        location=location,
+        source_name=name or None,
+    )
+
+
+#: Maps ``parser`` config key to ``(factory_fn, display_suffix_key)``.
+#: The display key is resolved by :func:`_display_suffix` into the value
+#: shown after ``parser / company ->`` in the "Registered source" log
+#: line, so the operator sees a meaningful identifier per source.
 PARSER_REGISTRY: dict[str, tuple] = {
     "hrpeak": (_build_hrpeak, "url"),
     "successfactors": (_build_successfactors, "url"),
@@ -165,13 +184,22 @@ PARSER_REGISTRY: dict[str, tuple] = {
     "peoplise": (_build_peoplise, "url"),
     "hirex": (_build_hirex, "url"),
     "zoho_recruit": (_build_zoho_recruit, "url"),
+    "linkedin": (_build_linkedin, "keywords"),
 }
 
 
-def _display_suffix(parser: str, display_key: str, entry: dict, company: str, url: str) -> str:
+def _display_suffix(
+    parser: str,
+    display_key: str,
+    entry: dict,
+    company: str,
+    url: str,
+) -> str:
     """Return the value to show after ``parser / company ->`` in the log."""
     if display_key == "board_token":
-        return str(entry.get("board_token") or entry.get("token") or entry.get("slug") or "").strip()
+        return str(
+            entry.get("board_token") or entry.get("token") or entry.get("slug") or ""
+        ).strip()
     if display_key in ("company_slug", "url_or_company_slug"):
         slug = str(entry.get("company_slug") or entry.get("slug") or "").strip()
         return url or slug if display_key == "url_or_company_slug" else slug
@@ -180,6 +208,12 @@ def _display_suffix(parser: str, display_key: str, entry: dict, company: str, ur
         return url or account
     if display_key == "name_and_url":
         return url
+    if display_key == "keywords":
+        # For keyword-scoped sources (LinkedIn) show the search terms
+        # plus the configured location, e.g. "junior java @ Turkey".
+        keywords = str(entry.get("keywords") or "").strip()
+        location = str(entry.get("location") or "").strip()
+        return f"{keywords} @ {location}" if location else keywords
     return url
 
 
@@ -188,11 +222,11 @@ def build_source_from_entry(
     *,
     index: int,
 ) -> BaseSource | None:
-    """Build one ``BaseSource`` from a config entry dict.
+    """Build one :class:`BaseSource` from a config entry dict.
 
     Returns ``None`` if the entry is disabled or has no ``parser`` key.
-    Raises ``ValueError`` if required fields are missing — the caller
-    is expected to catch and log it, matching the pre-refactor behavior.
+    Raises ``ValueError`` if required fields are missing — the caller is
+    expected to catch and log it, matching the pre-refactor behavior.
     """
     if not entry.get("enabled", True):
         logger.info(f"sources[{index}] disabled by config; skipping.")

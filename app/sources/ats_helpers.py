@@ -107,6 +107,62 @@ def fetch_with_retry(
     raise RuntimeError("fetch_with_retry exhausted retries without a response")
 
 
+def fetch_with_retry(
+    url: str,
+    *,
+    headers: dict | None = None,
+    timeout: int = REQUEST_TIMEOUT,
+    retries: int = 3,
+    backoff: float = 2.0,
+) -> requests.Response:
+    """GET ``url`` with retries and exponential backoff.
+
+    Re-issues the request up to ``retries`` times on connection errors
+    and 5xx responses. Any non-recoverable HTTP error (4xx after final
+    attempt, exhausted retries) is re-raised as the last
+    :class:`requests.Response.raise_for_status` / exception so callers
+    can decide how to treat a failure.
+
+    Args:
+        url: Absolute URL to fetch.
+        headers: Optional request headers. Defaults to :data:`DEFAULT_HEADERS`.
+        timeout: Per-request timeout in seconds.
+        retries: Maximum number of attempts (including the first).
+        backoff: Multiplier for exponential backoff between attempts.
+
+    Returns:
+        The successful :class:`requests.Response`.
+
+    Raises:
+        requests.RequestException: If every attempt fails.
+    """
+    if headers is None:
+        headers = DEFAULT_HEADERS
+
+    last_exc: Exception | None = None
+    attempts = max(1, int(retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(url, timeout=timeout, headers=headers)
+            # Retry on server-side errors.
+            if 500 <= response.status_code < 600 and attempt < attempts:
+                delay = backoff ** (attempt - 1)
+                time.sleep(delay)
+                continue
+            return response
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt < attempts:
+                delay = backoff ** (attempt - 1)
+                time.sleep(delay)
+                continue
+            raise
+    # Should be unreachable, but keep mypy honest.
+    if last_exc is not None:  # pragma: no cover - defensive
+        raise last_exc
+    raise RuntimeError("fetch_with_retry exhausted retries without a response.")  # pragma: no cover
+
+
 def clean_text(value: object | None) -> str:
     if value is None:
         return ""

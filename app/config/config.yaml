@@ -697,6 +697,37 @@ sources:
   company: SAP Türkiye
   url: https://jobs.sap.com/go/T%C3%BCrkiye/9054501/
   enabled: true
+# ---- New sources: LinkedIn, Remotive, Python.org ----
+- parser: linkedin
+  name: linkedin_junior_java_turkey
+  keywords: junior java developer
+  location: Turkey
+  enabled: true
+- parser: linkedin
+  name: linkedin_new_grad_software_turkey
+  keywords: new grad software engineer
+  location: Turkey
+  enabled: true
+- parser: linkedin
+  name: linkedin_backend_junior_turkey
+  keywords: junior backend developer
+  location: Turkey
+  enabled: true
+- parser: remotive
+  name: remotive_junior_remote
+  search: junior developer
+  category: software-dev
+  limit: 50
+  enabled: true
+- parser: remotive
+  name: remotive_entry_level_remote
+  search: entry level
+  category: software-dev
+  limit: 30
+  enabled: true
+- parser: python_jobs
+  name: python_jobs
+  enabled: true
 - parser: kariyer_net
   name: kariyer_net_java_backend
   url: https://www.kariyer.net/is-ilanlari?kw=java%20backend
@@ -745,3 +776,22 @@ sources:
   name: kariyer_net_entegrasyon_destek
   url: https://www.kariyer.net/is-ilanlari?kw=entegrasyon%20destek
   enabled: false
+# ---- Kariyer.net via Playwright (Cloudflare bypass) ----
+# These replace the disabled kariyer_net entries above with the
+# Playwright-based parser that can bypass Cloudflare's 403.
+- parser: kariyer_net_pw
+  name: kariyer_net_pw_junior_java
+  url: https://www.kariyer.net/is-ilanlari?kw=junior%20java
+  enabled: true
+- parser: kariyer_net_pw
+  name: kariyer_net_pw_yeni_mezun_yazilim
+  url: https://www.kariyer.net/is-ilanlari?kw=yeni%20mezun%20yaz%C4%B1l%C4%B1m
+  enabled: true
+- parser: kariyer_net_pw
+  name: kariyer_net_pw_yazilim_destek
+  url: https://www.kariyer.net/is-ilanlari?kw=yaz%C4%B1l%C4%B1m%20destek
+  enabled: true
+- parser: kariyer_net_pw
+  name: kariyer_net_pw_junior_backend
+  url: https://www.kariyer.net/is-ilanlari?kw=junior%20backend
+  enabled: true

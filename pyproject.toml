@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "manul-radar"
-version = "1.0.0"
+version = "1.1.0"
 description = "Manul Sentinel — lightweight personal job monitoring assistant"
 requires-python = ">=3.10"
 dependencies = [
@@ -19,6 +19,9 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+]
+playwright = [
+    "playwright>=1.40",
 ]
 
 [tool.setuptools.packages.find]
