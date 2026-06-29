@@ -1,25 +1,24 @@
 """Parser registry — maps ``parser`` config keys to source factory functions.
 
-Before this module existed, ``run_monitor._build_sources_from_config``
-contained a 10-branch ``if parser == "hrpeak" / elif parser == ...``
-chain. Every new parser required editing that function, violating the
-Open/Closed Principle. This registry replaces the chain with a simple
-dictionary lookup: adding a new parser is now a matter of adding one
-entry to ``PARSER_REGISTRY`` (or calling :func:`register_parser`).
+Before this module existed, ``run_monitor._build_sources_from_config`` contained
+a 10-branch ``if parser == "hrpeak" / elif parser == ...`` chain. Every new
+parser required editing that function, violating the Open/Closed Principle.
+This registry replaces the chain with a simple dictionary lookup: adding a new
+parser is now a matter of adding one entry to :data:`PARSER_REGISTRY`.
 
-Each factory receives the raw config ``entry`` dict and the pre-parsed
-common fields (``company``, ``name``, ``url``) so it can pull parser-
-specific keys (``board_token``, ``company_slug``, ``account``, …)
-without repeating the boilerplate extraction.
+Each factory receives the raw config ``entry`` dict and the pre-parsed common
+fields (``company``, ``name``, ``url``) so it can pull parser-specific keys
+(``board_token``, ``company_slug``, ``account``, ``keywords`` …) without
+repeating the boilerplate extraction.
 """
 from __future__ import annotations
 
 from app.sources.base_source import BaseSource
-from app.sources.dummy_source import DummySource
 from app.sources.greenhouse_source import GreenhouseSource
 from app.sources.hirex_source import HirexSource
 from app.sources.hrpeak_source import HrPeakSource
 from app.sources.kariyer_net_source import KariyerNetSource
+from app.sources.linkedin_source import LinkedInSource
 from app.sources.lever_source import LeverSource
 from app.sources.peoplise_source import PeopliseSource
 from app.sources.smartrecruiters_source import SmartRecruitersSource
@@ -150,14 +149,18 @@ def _build_zoho_recruit(entry: dict, *, company: str, name: str, url: str) -> Ba
     )
 
 
-# ---- New sources: LinkedIn, Kariyer.net Playwright, Remotive, Python.org ----
-
 def _build_linkedin(entry: dict, *, company: str, name: str, url: str) -> BaseSource:
-    keywords = str(entry.get("keywords") or entry.get("search") or "").strip()
+    """Build a LinkedIn guest-API source from a config entry.
+
+    Unlike the company-board parsers, LinkedIn is keyword-scoped: the
+    config entry supplies ``keywords`` (required) and ``location``
+    (optional, defaults to "Turkey"). The ``company``/``url`` common
+    fields are ignored here.
+    """
+    keywords = str(entry.get("keywords") or "").strip()
     if not keywords:
         raise ValueError("linkedin requires keywords")
-    location = str(entry.get("location") or "Turkey").strip()
-    from app.sources.linkedin_source import LinkedInSource
+    location = str(entry.get("location") or "Turkey").strip() or "Turkey"
     return LinkedInSource(
         keywords=keywords,
         location=location,
@@ -165,44 +168,10 @@ def _build_linkedin(entry: dict, *, company: str, name: str, url: str) -> BaseSo
     )
 
 
-def _build_kariyer_net_pw(entry: dict, *, company: str, name: str, url: str) -> BaseSource:
-    if not url:
-        raise ValueError("kariyer_net_pw requires url")
-    from app.sources.kariyer_net_playwright_source import KariyerNetPlaywrightSource
-    headless_raw = entry.get("headless", True)
-    headless = headless_raw if isinstance(headless_raw, bool) else str(headless_raw).strip().lower() in {"1", "true", "yes", "on"}
-    timeout = int(entry.get("timeout", 30000))
-    return KariyerNetPlaywrightSource(
-        search_url=url,
-        source_name=name or "kariyer_net_pw",
-        headless=headless,
-        timeout=timeout,
-    )
-
-
-def _build_remotive(entry: dict, *, company: str, name: str, url: str) -> BaseSource:
-    search = str(entry.get("search") or "junior").strip()
-    category = str(entry.get("category") or "software-dev").strip()
-    limit = int(entry.get("limit", 50))
-    from app.sources.remotive_source import RemotiveSource
-    return RemotiveSource(
-        search=search,
-        category=category,
-        source_name=name or "remotive",
-        limit=limit,
-    )
-
-
-def _build_python_jobs(entry: dict, *, company: str, name: str, url: str) -> BaseSource:
-    from app.sources.pythonjobs_source import PythonJobsSource
-    return PythonJobsSource(
-        source_name=name or "python_jobs",
-    )
-
-
-#: Maps ``parser`` config key to ``(factory_fn, display_suffix)``.
-#: The ``display_suffix`` is used in the "Registered source" log line
-#: so the operator sees a meaningful identifier per source.
+#: Maps ``parser`` config key to ``(factory_fn, display_suffix_key)``.
+#: The display key is resolved by :func:`_display_suffix` into the value
+#: shown after ``parser / company ->`` in the "Registered source" log
+#: line, so the operator sees a meaningful identifier per source.
 PARSER_REGISTRY: dict[str, tuple] = {
     "hrpeak": (_build_hrpeak, "url"),
     "successfactors": (_build_successfactors, "url"),
@@ -216,18 +185,21 @@ PARSER_REGISTRY: dict[str, tuple] = {
     "hirex": (_build_hirex, "url"),
     "zoho_recruit": (_build_zoho_recruit, "url"),
     "linkedin": (_build_linkedin, "keywords"),
-    "kariyer_net_pw": (_build_kariyer_net_pw, "url"),
-    "remotive": (_build_remotive, "search"),
-    "python_jobs": (_build_python_jobs, None),
 }
 
 
-def _display_suffix(parser: str, display_key: str | None, entry: dict, company: str, url: str) -> str:
+def _display_suffix(
+    parser: str,
+    display_key: str,
+    entry: dict,
+    company: str,
+    url: str,
+) -> str:
     """Return the value to show after ``parser / company ->`` in the log."""
-    if display_key is None:
-        return company or url or ""
     if display_key == "board_token":
-        return str(entry.get("board_token") or entry.get("token") or entry.get("slug") or "").strip()
+        return str(
+            entry.get("board_token") or entry.get("token") or entry.get("slug") or ""
+        ).strip()
     if display_key in ("company_slug", "url_or_company_slug"):
         slug = str(entry.get("company_slug") or entry.get("slug") or "").strip()
         return url or slug if display_key == "url_or_company_slug" else slug
@@ -237,9 +209,11 @@ def _display_suffix(parser: str, display_key: str | None, entry: dict, company: 
     if display_key == "name_and_url":
         return url
     if display_key == "keywords":
-        return str(entry.get("keywords") or entry.get("search") or "").strip()
-    if display_key == "search":
-        return str(entry.get("search") or "").strip()
+        # For keyword-scoped sources (LinkedIn) show the search terms
+        # plus the configured location, e.g. "junior java @ Turkey".
+        keywords = str(entry.get("keywords") or "").strip()
+        location = str(entry.get("location") or "").strip()
+        return f"{keywords} @ {location}" if location else keywords
     return url
 
 
@@ -248,11 +222,11 @@ def build_source_from_entry(
     *,
     index: int,
 ) -> BaseSource | None:
-    """Build one ``BaseSource`` from a config entry dict.
+    """Build one :class:`BaseSource` from a config entry dict.
 
     Returns ``None`` if the entry is disabled or has no ``parser`` key.
-    Raises ``ValueError`` if required fields are missing — the caller
-    is expected to catch and log it, matching the pre-refactor behavior.
+    Raises ``ValueError`` if required fields are missing — the caller is
+    expected to catch and log it, matching the pre-refactor behavior.
     """
     if not entry.get("enabled", True):
         logger.info(f"sources[{index}] disabled by config; skipping.")
@@ -285,7 +259,7 @@ def build_source_from_entry(
             f"Registered source: kariyer_net (name={name or 'kariyer_net'}) -> {url}"
         )
     else:
-        logger.info(f"Registered source: {parser} / {company or name or 'N/A'} -> {display}")
+        logger.info(f"Registered source: {parser} / {company} -> {display}")
 
     return source
 

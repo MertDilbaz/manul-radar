@@ -776,3 +776,22 @@ sources:
   name: kariyer_net_entegrasyon_destek
   url: https://www.kariyer.net/is-ilanlari?kw=entegrasyon%20destek
   enabled: false
+# ---- Kariyer.net via Playwright (Cloudflare bypass) ----
+# These replace the disabled kariyer_net entries above with the
+# Playwright-based parser that can bypass Cloudflare's 403.
+- parser: kariyer_net_pw
+  name: kariyer_net_pw_junior_java
+  url: https://www.kariyer.net/is-ilanlari?kw=junior%20java
+  enabled: true
+- parser: kariyer_net_pw
+  name: kariyer_net_pw_yeni_mezun_yazilim
+  url: https://www.kariyer.net/is-ilanlari?kw=yeni%20mezun%20yaz%C4%B1l%C4%B1m
+  enabled: true
+- parser: kariyer_net_pw
+  name: kariyer_net_pw_yazilim_destek
+  url: https://www.kariyer.net/is-ilanlari?kw=yaz%C4%B1l%C4%B1m%20destek
+  enabled: true
+- parser: kariyer_net_pw
+  name: kariyer_net_pw_junior_backend
+  url: https://www.kariyer.net/is-ilanlari?kw=junior%20backend
+  enabled: true
