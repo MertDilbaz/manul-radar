@@ -3,7 +3,7 @@ telegram:
   chat_id_env: TELEGRAM_CHAT_ID
 notification:
   mode: digest_pages
-  greeting: 'Günaydın Mert, işte sana uygun yeni iş ilanları:'
+  greeting: 'Günaydın Mert, iş ilanı taraması tamamlandı.'
   jobs_per_page: 4
   max_pages: 3
   max_jobs_in_digest: 12

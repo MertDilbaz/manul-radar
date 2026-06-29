@@ -4,6 +4,42 @@ Tarih sıralı, geriye dönük uyumlu. Breaking change'ler `⚠️` ile işaretl
 
 ---
 
+## 2026-06-29 — Telegram V3: minimal message format
+
+### Changed
+
+- **Telegram summary** is now a single 4-line block: bot header + greeting + `🔍 Taranan ilan` + `⭐ Uygun yeni ilan`. The 2026-06-29 V2 confidence-distribution line, 8 reject-bucket lines, and the "Güven etiketi her ilan için ayrıca gösteriliyor" footer are all removed.
+- **Telegram job cards** now show only: `<index>) <title>`, `🏢 <company>`, `📍 <location>`, `💼 <commitment> | İş modeli: <work_model>`, `⭐ Skor:`, `✅ Eşleşenler:`, `🔗 İlanı Aç`. The `Güven:` (🟢/🟡/🔴) and `Neden:` lines are removed.
+- **Empty-result message** (no relevant jobs) uses the same 4-line shape with `⭐ Uygun yeni ilan: 0`.
+- **`config.yaml` `notification.greeting`** updated to `"Günaydın Mert, iş ilanı taraması tamamlandı."` to match the new minimal format.
+
+### Added
+
+- **`_split_work_arrangement(work_type, description)`** helper inside `telegram_notifier.py`. Returns `(commitment_label, work_model_label)` parsed from the job's `work_type` field (and falling back to a substring scan of `description`). Recognised commitment labels: `Full-Time`, `Part-Time`, `Internship`, `Contract`, `Temporary`, `Belirtilmemiş`. Recognised work-model labels: `Remote`, `Hybrid`, `On-site`, `Belirtilmemiş`. Lets a single Telegram card show two distinct pieces of information without requiring a new ``Job`` schema field.
+
+### Removed
+
+- `_confidence_label`, `_confidence_emoji`, `_confidence_reason_text` helpers in `telegram_notifier.py` — they only existed to render the dropped fields.
+- The `Kaynak:` line from `format_scored_job_message` (single-job path) — the source is no longer rendered to the operator message; it remains on the ``ScoredJob`` and in ``data/jobs.db`` for debugging.
+
+### Not changed (intentional)
+
+- **Scoring, filtering, and confidence tiering** remain intact. `ScoredJob.confidence` and `ScoredJob.confidence_reasons` are still populated by `JobScorer.score()`; they just never reach the Telegram payload anymore.
+- **Pagination** — `jobs_per_page`, `max_pages`, `max_jobs_in_digest` config keys still drive `format_job_digest_page_messages`. The legacy `format_job_digest_messages` single-page wrapper still works.
+- **Telegram safety guards** (`MANUL_ENABLE_TELEGRAM_SEND`, dummy-mode block, source summary log, empty-source `RuntimeError`) — untouched, re-tested.
+- **All 11 source parsers** and their constructor contracts (`smoke_source_name_contract.py`) — untouched.
+
+### Verification
+
+- 114 OK / 0 FAIL across all smoke tests. Five new assertions in `smoke_telegram_notifier.py`:
+  - `FORMAT_V3_NO_CONFIDENCE` — no `Güven` / `Neden` / `🟢` / `🟡` / `🔴` in operator messages.
+  - `DIGEST_V3_MINIMAL` — summary shows only header + greeting + `Taranan ilan` + `Uygun yeni ilan`; 13 forbidden substrings are absent.
+  - `EMPTY_DIGEST_MINIMAL` — empty result is a single message with `Uygun yeni ilan: 0`.
+  - `JOB_CARD_V3_FIELDS` — per-job card shows the 8 required tokens (`<index>) <title>`, `🏢`, `📍`, `💼`, `İş modeli:`, `⭐ Skor:`, `✅ Eşleşenler:`, `🔗 İlanı Aç`) and none of the forbidden confidence tokens.
+  - `SPLIT_WORK_OK` — `_split_work_arrangement` returns the expected `(commitment, work_model)` tuple for Full-Time / Internship / Hybrid / Remote / `None`.
+
+---
+
 ## 2026-06-29 — ⚠️ Production runner crash fix: `source_name` caller/callee mismatch
 
 ### Fixed

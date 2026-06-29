@@ -4,6 +4,98 @@ Bu dosya session bazlı özet tutar. Her büyük değişiklik turundan sonra gü
 
 ---
 
+## 2026-06-29 — Telegram V3: mesaj formatını sadeleştir
+
+**Sorun:** Son production çıktısında summary kısmı fazla kalabalık oldu:
+
+- Güven dağılımı satırı (🟢 yüksek / 🟡 orta / 🔴 düşük sayıları)
+- Elenen toplam + 8 ayrı bucket satırı (lokasyon, no_domain, experience+hard, non_target, mobile, role, generic_only, score)
+- "Güven etiketi her ilan için ayrıca gösteriliyor" açıklaması
+
+İş ilanı kartlarında da her birinde `Güven: 🟢/🟡/🔴 <label>` + `Neden: <reasons>` satırı vardı. Telefon bildiriminde bu detaylar gereksiz gürültü.
+
+**Çözüm — sadece görünüm sadeleştirildi, içerideki hesaplama korundu:**
+
+**Summary mesajı** (eski 12 satır → yeni 4 satır):
+
+```text
+🐈 Manul Sentinel
+
+Günaydın Mert, iş ilanı taraması tamamlandı.
+
+🔍 Taranan ilan: 195
+⭐ Uygun yeni ilan: 4
+```
+
+**İş ilanı kartı** (eski 8 satır → yeni 7 satır, Güven/Neden satırları çıkarıldı):
+
+```text
+1) Software Engineer
+🏢 Midas
+📍 İstanbul, Turkey
+💼 Full-Time | İş modeli: Hybrid
+⭐ Skor: 93
+✅ Eşleşenler: turkey, istanbul, midas, software engineer
+🔗 İlanı Aç
+```
+
+**Boş sonuç mesajı** (uygun ilan yokken) sadeleştirildi:
+
+```text
+🐈 Manul Sentinel
+
+Günaydın Mert. Bugün filtrelerine uygun yeni iş ilanı bulamadım.
+
+🔍 Taranan ilan: 195
+⭐ Uygun yeni ilan: 0
+```
+
+**Yeni helper:** `_split_work_arrangement(work_type, description)` → `(commitment_label, work_model_label)` tuple. `work_type` ve description'dan:
+
+- Commitment (Full-Time / Part-Time / Internship / Contract / Temporary / Belirtilmemiş)
+- Work model (Remote / Hybrid / On-site / Belirtilmemiş)
+
+etiketlerini ayırır. Önceden tek `work_type` field'ı vardı, şimdi kartta `💼 <commitment> | İş modeli: <work_model>` olarak iki ayrı bilgi gösteriliyor.
+
+**Değişen dosyalar:**
+
+- `app/notifier/telegram_notifier.py` — V3 sadeleştirme:
+  - `_format_summary_message`: sadece başlık + selamlama + taranan + uygun (güven dağılımı, bucket'lar, footer tamamen YOK).
+  - `_format_digest_job_item`: başlık, firma, konum, 💼 çalışma, ⭐ skor, ✅ eşleşenler, 🔗 link (Güven/Neden/emoji tamamen YOK).
+  - `format_scored_job_message`: aynı sadeleştirme single mode için.
+  - `_split_work_arrangement` helper'ı eklendi.
+  - Eski `_confidence_label` / `_confidence_emoji` / `_confidence_reason_text` helper'ları kaldırıldı.
+- `app/config/config.yaml` — `greeting` yeni formata uyacak şekilde güncellendi: `"Günaydın Mert, iş ilanı taraması tamamlandı."`
+- `tests/smoke_telegram_notifier.py` — 5 yeni assertion eklendi:
+  - `FORMAT_V3_NO_CONFIDENCE`: operator mesajında `Güven` / `Neden` / `🟢` / `🟡` / `🔴` yok.
+  - `DIGEST_V3_MINIMAL`: summary'de forbidden 13 substring yok + required 4 token var.
+  - `EMPTY_DIGEST_MINIMAL`: empty result tek mesaj + 0 relevant sayısı.
+  - `JOB_CARD_V3_FIELDS`: index+title, firma, konum, 💼, İş modeli, ⭐ Skor, ✅ Eşleşenler, 🔗 İlanı Aç var; Güven/Neden/emoji YOK.
+  - `SPLIT_WORK_OK`: `_split_work_arrangement` Full-Time/Internship/Remote/Hybrid/Belirtilmemiş hepsini parse ediyor.
+
+**Değişmeyen (kasıtlı):**
+
+- **Scoring/filtering davranışı** — minimum_score=60, tiered weights, mobile_penalty, generic_only_penalty, confidence tier hesaplaması (`ScoredJob.confidence` field'ı) HEPSI AYNI. Sadece Telegram çıktısına yansımıyor.
+- **Pagination** — aynı: `jobs_per_page`, `max_pages`, `max_jobs_in_digest` config değerleri korundu, `format_job_digest_page_messages` ve `format_job_digest_messages` wrapper'ları aynı imzayla.
+- **Mevcut Telegram safety guard'ları** — `MANUL_ENABLE_TELEGRAM_SEND`, dummy mode block, source summary log, empty-source RuntimeError.
+- **Source parser davranışı** — tüm 11 parser aynı.
+
+**Doğrulama — 114 OK / 0 FAIL:**
+
+| Test | Sonuç |
+|---|---|
+| `smoke_telegram_notifier.py` (5 yeni assertion dahil) | 14 OK |
+| `smoke_job_scorer_policy.py` | 9 OK |
+| `smoke_run_monitor_guards.py` | 24 OK |
+| `smoke_ats_sources.py` | 19 OK |
+| `smoke_run_monitor.py` | 9 OK |
+| `smoke_scoring_v2.py` | 17 OK |
+| `smoke_source_name_contract.py` | 22 OK |
+
+**Sonraki adım:** Production'da bir kez daha `workflow_dispatch` run tetikle. Yeni Telegram çıktısı minimal formatta gelecek — sadece 4 satırlık summary + her iş ilanı için 7 satırlık kart.
+
+---
+
 ## 2026-06-29 — Production runner crash: `source_name` caller/callee mismatch
 
 **Sorun:** Mert GH Actions'ta `workflow_dispatch` ile bir run tetikledi ve aşağıdaki hatayı aldı:

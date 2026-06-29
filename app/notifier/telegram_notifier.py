@@ -1,18 +1,40 @@
 """Telegram notifier — sends job alerts and digest summaries via Bot API.
 
-V2 format (2026-06-29):
+V3 (2026-06-29): the message format is intentionally minimal so a
+phone notification carries only what matters to Mert.
 
-* Each job card shows a **confidence** tier (``Yüksek / Orta / Düşük``)
-  plus a short ``Neden`` line so Mert can tell at a glance whether a
-  listing is a strong junior+java match or a generic
-  "Software Engineer" hit from a high-priority company.
-* The summary no longer adds overlapping rejection counters; the
-  bucket names match the exclusive primary-reject-reason used by
-  :class:`app.services.job_monitor_service.JobMonitorService` and the
-  per-bucket counts sum to ``rejected_total`` instead of exceeding it.
+**Summary message** (sent first when there is at least one relevant
+job, or sent alone when there are none)::
+
+    🐈 Manul Sentinel
+
+    Günaydın Mert, iş ilanı taraması tamamlandı.
+
+    🔍 Taranan ilan: 195
+    ⭐ Uygun yeni ilan: 4
+
+**Per-job card** (one per page slot, paged across multiple Telegram
+messages if needed)::
+
+    1) Software Engineer
+    🏢 Midas
+    📍 İstanbul, Turkey
+    💼 Full-Time | İş modeli: Hybrid
+    ⭐ Skor: 93
+    ✅ Eşleşenler: turkey, istanbul, midas, software engineer
+    🔗 İlanı Aç
+
+Confidence tiers (``high``/``medium``/``low``) and the per-job
+``Neden`` reason list are still computed by
+:class:`app.filters.job_scorer.JobScorer` and stored on
+:class:`app.models.scored_job.ScoredJob`, but they are **never**
+rendered into the Telegram payload. The operator can still see
+them in the ``data/jobs.db`` SQLite repository or in the runner's
+top-rejected log if needed.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from html import escape
 
@@ -26,17 +48,52 @@ _TELEGRAM_HARD_LIMIT = 4096
 _DEFAULT_SAFE_LIMIT = 3800
 
 
-_CONFIDENCE_LABELS: dict[str, str] = {
-    "high": "yüksek",
-    "medium": "orta",
-    "low": "düşük",
-}
+# Commitment / work-model signal vocabularies. These are matched
+# case-insensitively against the job's ``work_type`` field and (if
+# that does not yield a label) the description text.
+_COMMITMENT_LABELS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Full-Time", ("full time", "full-time", "fulltime", "tam zamanli", "tam zamanlı")),
+    ("Part-Time", ("part time", "part-time", "parttime", "yarı zamanli", "yarı zamanlı")),
+    ("Internship", ("intern", "internship", "staj", "stajyer")),
+    ("Contract", ("contract", "kontrat", "freelance", "sözleşmeli", "sozlesmeli")),
+    ("Temporary", ("temporary", "geçici", "gecici")),
+)
 
-_CONFIDENCE_EMOJI: dict[str, str] = {
-    "high": "🟢",
-    "medium": "🟡",
-    "low": "🔴",
-}
+_WORK_MODEL_LABELS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Remote", ("remote", "tamamen uzaktan", "work from home", "wfh")),
+    ("Hybrid", ("hybrid", "hibrit")),
+    ("On-site", ("on-site", "on site", "office", "ofiste", "iş yerinde", "is yerinde")),
+)
+
+
+def _match_label(text: str, vocab: tuple[tuple[str, tuple[str, ...]], ...]) -> str | None:
+    """Return the first vocabulary label that appears in ``text``."""
+    if not text:
+        return None
+    lowered = text.lower()
+    for label, needles in vocab:
+        for needle in needles:
+            if needle in lowered:
+                return label
+    return None
+
+
+def _split_work_arrangement(work_type: str | None, description: str | None) -> tuple[str, str]:
+    """Return ``(commitment_label, work_model_label)`` for a job card.
+
+    Looks at ``work_type`` first (the most reliable field), then
+    falls back to a substring scan of ``description``. The
+    commitment label answers "what kind of employment"
+    (``Full-Time`` / ``Internship`` / …) while the work-model label
+    answers "where the work happens"
+    (``Remote`` / ``Hybrid`` / ``On-site``). When either is
+    unknown the card shows ``"Belirtilmemiş"`` so the line stays
+    grammatical and Mert never has to guess what a missing field
+    meant.
+    """
+    commitment = _match_label(work_type, _COMMITMENT_LABELS) or _match_label(description, _COMMITMENT_LABELS)
+    work_model = _match_label(work_type, _WORK_MODEL_LABELS) or _match_label(description, _WORK_MODEL_LABELS)
+    return (commitment or "Belirtilmemiş", work_model or "Belirtilmemiş")
 
 
 class TelegramNotifier:
@@ -92,55 +149,6 @@ def _format_keywords(scored_job: ScoredJob, *, limit: int | None = None) -> str:
     return ", ".join(keywords)
 
 
-def _confidence_label(scored_job: ScoredJob) -> str:
-    key = (scored_job.confidence or "").lower()
-    return _CONFIDENCE_LABELS.get(key, "orta")
-
-
-def _confidence_emoji(scored_job: ScoredJob) -> str:
-    key = (scored_job.confidence or "").lower()
-    return _CONFIDENCE_EMOJI.get(key, "🟡")
-
-
-def _confidence_reason_text(scored_job: ScoredJob) -> str:
-    """Render the scorer-provided reasons as a short Turkish phrase.
-
-    Falls back to the matched-keyword list when the scorer did not
-    attach explicit reasons (e.g. a V1 caller that did not set the
-    new fields).
-    """
-    reasons = list(scored_job.confidence_reasons or [])
-    if reasons:
-        # Reasons are already short Turkish phrases; just join them.
-        return "; ".join(reasons)
-    # Fallback: show top keywords so the message is still meaningful.
-    return _format_keywords(scored_job, limit=4)
-
-
-def format_scored_job_message(scored_job: ScoredJob) -> str:
-    """Render one ``ScoredJob`` as a standalone Telegram alert body."""
-    url = scored_job.job.url or "(url bilinmiyor)"
-    matched = _format_keywords(scored_job)
-    confidence_label = _confidence_label(scored_job)
-    confidence_emoji = _confidence_emoji(scored_job)
-    reason_text = _confidence_reason_text(scored_job)
-
-    return (
-        "🐈 Manul Sentinel\n"
-        "\n"
-        "Yeni fırsat bulundu.\n"
-        "\n"
-        f"Pozisyon: {scored_job.job.title}\n"
-        f"Şirket: {scored_job.job.company}\n"
-        f"Kaynak: {scored_job.job.source}\n"
-        f"Skor: {scored_job.score} | Güven: {confidence_emoji} {confidence_label}\n"
-        f"Eşleşenler: {matched}\n"
-        f"Neden: {reason_text}\n"
-        "\n"
-        f"Link: {url}"
-    )
-
-
 def _get_stat(stats: object | None, key: str, default: int = 0) -> int:
     if stats is None:
         return default
@@ -154,6 +162,34 @@ def _get_stat(stats: object | None, key: str, default: int = 0) -> int:
         return default
 
 
+def format_scored_job_message(scored_job: ScoredJob) -> str:
+    """Render one ``ScoredJob`` as a standalone Telegram alert body.
+
+    V3 (2026-06-29): minimal format that mirrors the per-job card in
+    the digest. Confidence tier / reason are intentionally omitted.
+    """
+    url = scored_job.job.url or "(url bilinmiyor)"
+    matched = _format_keywords(scored_job)
+    commitment, work_model = _split_work_arrangement(
+        scored_job.job.work_type, scored_job.job.description
+    )
+
+    return (
+        "🐈 Manul Sentinel\n"
+        "\n"
+        "Yeni fırsat bulundu.\n"
+        "\n"
+        f"Pozisyon: {scored_job.job.title}\n"
+        f"Şirket: {scored_job.job.company}\n"
+        f"Konum: {scored_job.job.location or 'Belirtilmemiş'}\n"
+        f"Çalışma: {commitment} | İş modeli: {work_model}\n"
+        f"Skor: {scored_job.score}\n"
+        f"Eşleşenler: {matched}\n"
+        "\n"
+        f"Link: {url}"
+    )
+
+
 def _format_summary_message(
     *,
     greeting: str,
@@ -162,98 +198,61 @@ def _format_summary_message(
     stats: object | None,
     empty_message: str,
 ) -> str:
+    """Render the minimal summary line (no confidence buckets, no filter breakdowns).
+
+    V3 (2026-06-29): the only counter the operator sees is
+    ``total_seen`` + ``new_relevant``. Confidence distribution,
+    per-bucket reject counts, and "Güven etiketi ayrıca
+    gösteriliyor" footers are intentionally dropped so the phone
+    notification stays under a single glance.
+    """
     total_seen = _get_stat(stats, "total_seen")
-    relevant_total = _get_stat(stats, "relevant_total", len(scored_jobs))
     new_relevant = _get_stat(stats, "new_relevant", len(scored_jobs))
-    already_seen = _get_stat(stats, "already_seen")
-    rejected_total = _get_stat(stats, "rejected_total")
-    rejected_no_domain = _get_stat(stats, "rejected_no_domain")
-    rejected_location = _get_stat(stats, "rejected_location")
-    rejected_experience = _get_stat(stats, "rejected_experience")
-    rejected_hard = _get_stat(stats, "rejected_hard")
-    rejected_non_target = _get_stat(stats, "rejected_non_target")
-    rejected_mobile = _get_stat(stats, "rejected_mobile")
-    rejected_role = _get_stat(stats, "rejected_role")
-    rejected_generic_only = _get_stat(stats, "rejected_generic_only")
-    rejected_score = _get_stat(stats, "rejected_score")
-    source_errors = _get_stat(stats, "source_errors")
 
     if not scored_jobs:
         body = escape(empty_message)
     else:
         body = escape(greeting)
 
-    # Per-bucket confidence breakdown for the relevant jobs.
-    confidence_counts = {"high": 0, "medium": 0, "low": 0}
-    for scored in scored_jobs:
-        key = (scored.confidence or "").lower()
-        if key in confidence_counts:
-            confidence_counts[key] += 1
-
     lines = [
         "🐈 <b>Manul Sentinel</b>",
         "",
         body,
         "",
-        "━━━━━━━━━━━━━━",
         f"🔍 Taranan ilan: <b>{total_seen}</b>",
         f"⭐ Uygun yeni ilan: <b>{new_relevant}</b>",
     ]
-    if relevant_total != new_relevant:
-        lines.append(f"📌 Toplam uygun: <b>{relevant_total}</b>")
-    if already_seen:
-        lines.append(f"♻️ Daha önce görülen uygun ilan: <b>{already_seen}</b>")
-    # Confidence breakdown only when there is at least one relevant job.
-    if scored_jobs:
-        lines.append(
-            "🎯 Güven dağılımı: "
-            f"🟢 yüksek <b>{confidence_counts['high']}</b>, "
-            f"🟡 orta <b>{confidence_counts['medium']}</b>, "
-            f"🔴 düşük <b>{confidence_counts['low']}</b>"
-        )
-    if rejected_total:
-        # V2: per-bucket counts are exclusive and sum to rejected_total,
-        # so we render them as "filtre nedenleri" instead of the old
-        # overlapping "elenen" list.
-        lines.extend(
-            [
-                f"🚫 Elenen toplam: <b>{rejected_total}</b>",
-                f"🇹🇷 Türkiye dışı / lokasyon belirsiz: <b>{rejected_location}</b>",
-                f"🧱 Yazılım/IT alanı dışı: <b>{rejected_no_domain}</b>",
-                f"⏳ 4+ yıl tecrübe / senior: <b>{rejected_experience + rejected_hard}</b>",
-                f"🏷️ Alan dışı etiket (muhasebe/HR/satış…): <b>{rejected_non_target}</b>",
-                f"📱 Mobil/iOS (backend sinyali yok): <b>{rejected_mobile}</b>",
-                f"🎓 Junior/yeni mezun/support yok: <b>{rejected_role}</b>",
-                f"📉 Sadece genel başlık sinyali: <b>{rejected_generic_only}</b>",
-                f"➖ Skor eşiğin altında: <b>{rejected_score}</b>",
-            ]
-        )
-    if source_errors:
-        lines.append(f"⚠️ Hata veren kaynak: <b>{source_errors}</b>")
-    lines.append("━━━━━━━━━━━━━━")
-    if scored_jobs:
-        lines.append(f"Aşağıda en yüksek skordan başlayarak ilk <b>{shown_count}</b> ilan var.")
-        lines.append("Güven etiketi 🟢/🟡/🔴 her ilan için ayrıca gösteriliyor.")
-    else:
-        lines.append("Filtreler aktif: Türkiye içi junior/yeni mezun yazılım, backend ve yazılım destek odaklı.")
     return "\n".join(lines)
 
 
 def _format_digest_job_item(index: int, scored_job: ScoredJob) -> str:
+    """Render one job card in the V3 minimal format.
+
+    Fields shown, in order:
+
+    * ``<index>) <title>``
+    * ``🏢 <company>``
+    * ``📍 <location>``
+    * ``💼 <commitment> | İş modeli: <work_model>``
+    * ``⭐ Skor: <score>``
+    * ``✅ Eşleşenler: <keywords>``
+    * ``🔗 İlanı Aç`` (or "Link yok")
+
+    Confidence tier, confidence reason, and emoji are deliberately
+    omitted. The scorer still computes them — they live on the
+    ``ScoredJob`` object — but the notifier no longer reads them.
+    """
     job = scored_job.job
     location = job.location or "Belirtilmemiş"
-    work_type = job.work_type or "Belirtilmemiş"
     matched = _format_keywords(scored_job, limit=7)
-    confidence_label = _confidence_label(scored_job)
-    confidence_emoji = _confidence_emoji(scored_job)
-    reason_text = _confidence_reason_text(scored_job)
+    commitment, work_model = _split_work_arrangement(job.work_type, job.description)
 
     title = escape(job.title or "Başlık yok")
     company = escape(job.company or "Şirket yok")
     location = escape(location)
-    work_type = escape(work_type)
+    commitment = escape(commitment)
+    work_model = escape(work_model)
     matched = escape(matched)
-    reason_text = escape(reason_text)
     url = escape(job.url or "")
 
     link = f'<a href="{url}">İlanı Aç</a>' if url else "Link yok"
@@ -261,10 +260,10 @@ def _format_digest_job_item(index: int, scored_job: ScoredJob) -> str:
     return (
         f"<b>{index}) {title}</b>\n"
         f"🏢 {company}\n"
-        f"📍 {location} | Çalışma: {work_type}\n"
-        f"⭐ Skor: <b>{scored_job.score}</b> | Güven: {confidence_emoji} {confidence_label}\n"
+        f"📍 {location}\n"
+        f"💼 {commitment} | İş modeli: {work_model}\n"
+        f"⭐ Skor: <b>{scored_job.score}</b>\n"
         f"✅ Eşleşenler: {matched}\n"
-        f"💡 Neden: {reason_text}\n"
         f"🔗 {link}"
     )
 
@@ -272,7 +271,7 @@ def _format_digest_job_item(index: int, scored_job: ScoredJob) -> str:
 def format_job_digest_page_messages(
     scored_jobs: Sequence[ScoredJob],
     *,
-    greeting: str = "Günaydın Mert, işte sana uygun yeni iş ilanları:",
+    greeting: str = "Günaydın Mert, iş ilanı taraması tamamlandı.",
     jobs_per_page: int = 4,
     max_pages: int = 3,
     max_jobs: int | None = 12,
@@ -355,7 +354,7 @@ def format_job_digest_page_messages(
 def format_job_digest_messages(
     scored_jobs: Sequence[ScoredJob],
     *,
-    greeting: str = "Günaydın Mert, işte sana uygun yeni iş ilanları:",
+    greeting: str = "Günaydın Mert, iş ilanı taraması tamamlandı.",
     max_jobs: int | None = 20,
     safe_char_limit: int = _DEFAULT_SAFE_LIMIT,
 ) -> list[str]:
@@ -376,4 +375,5 @@ __all__ = [
     "format_scored_job_message",
     "format_job_digest_messages",
     "format_job_digest_page_messages",
+    "_split_work_arrangement",
 ]
