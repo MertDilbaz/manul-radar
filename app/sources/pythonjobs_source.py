@@ -1,25 +1,21 @@
-"""Python.org jobs RSS feed source.
+"""Python.org job board source.
 
-Python.org publishes its job board as a free RSS feed at:::
+Python.org hosts a public job board at https://www.python.org/jobs/.
+The old RSS feed (``/jobs/feed/``) was deprecated and now returns 404.
+This source scrapes the HTML listing page instead.
 
-    https://www.python.org/jobs/feed/
-
-The feed is standard RSS 2.0: each ``<item>`` contains ``<title>``,
-``<link>``, ``<description>`` (HTML), ``<pubDate>`` and a handful of
-custom tags (``<job-type>``, ``<category>``, ``<dc:creator>``, etc.).
-Because the feed is Python-focused it skews toward entry-level /
-junior developer roles that explicitly mention Python, which makes it
+The job board lists Python-focused roles — many are entry-level /
+junior developer positions that explicitly mention Python, making this
 a useful complement to the broader API-based sources.
 
-Parsing uses the stdlib :mod:`xml.etree.ElementTree`, which is always
-available (unlike the BeautifulSoup ``"xml"`` feature, which requires
-the optional ``lxml`` dependency that is not in ``requirements.txt``).
-``dc:creator`` and other namespaced tags are matched defensively with
-a local-name lookup so missing namespaces never break a feed.
+Each job listing is an ``<article>`` or ``<li>`` element inside the
+``.job-list`` container with a link to the detail page.
 """
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
+import re
+
+from bs4 import BeautifulSoup
 
 from app.models.job import Job
 from app.sources.ats_helpers import (
@@ -27,7 +23,6 @@ from app.sources.ats_helpers import (
     REQUEST_TIMEOUT,
     clean_text,
     fetch_with_retry,
-    html_to_text,
     make_job,
     utc_now_iso,
 )
@@ -35,21 +30,16 @@ from app.sources.base_source import BaseSource
 from app.utils.logger import logger
 
 
-_FEED_URL = "https://www.python.org/jobs/feed/"
+_JOBS_URL = "https://www.python.org/jobs/"
 
 
 class PythonJobsSource(BaseSource):
-    """Fetch jobs from the Python.org RSS feed.
+    """Fetch jobs from the Python.org job board.
 
     Args:
         source_name: Name stamped on every emitted ``Job.source``.
-            Defaults to ``"python_jobs"``.
         timeout: Per-request timeout in seconds.
     """
-
-    name: str = "python_jobs"
-    timeout: int = REQUEST_TIMEOUT
-    feed_url: str = _FEED_URL
 
     def __init__(
         self,
@@ -58,17 +48,12 @@ class PythonJobsSource(BaseSource):
     ) -> None:
         self.name = source_name or "python_jobs"
         self.timeout = int(timeout)
-        self.feed_url = _FEED_URL
 
     def fetch_jobs(self) -> list[Job]:
-        """GET the Python.org RSS feed and return normalized ``Job`` instances.
-
-        On a network or parse error the source logs the failure and
-        returns ``[]`` rather than propagating the exception.
-        """
+        """GET the Python.org jobs page and parse job listings."""
         try:
             response = fetch_with_retry(
-                self.feed_url,
+                _JOBS_URL,
                 headers=DEFAULT_HEADERS,
                 timeout=self.timeout,
             )
@@ -77,86 +62,95 @@ class PythonJobsSource(BaseSource):
             logger.warning(
                 "Python.org Jobs source '{}' could not fetch {}: {}",
                 self.name,
-                self.feed_url,
+                _JOBS_URL,
                 exc,
             )
             return []
 
-        jobs = self._parse_feed(response.text)
-        logger.info("Python.org Jobs source '{}' parsed {} job(s).", self.name, len(jobs))
+        jobs = self._parse_html(response.text)
+        logger.info(
+            "Python.org Jobs source '{}' parsed {} job(s).",
+            self.name,
+            len(jobs),
+        )
         return jobs
 
-    # ---------------------- pure parsing (no I/O) ----------------------
-
-    def _parse_feed(self, xml_text: str) -> list[Job]:
-        """Parse the RSS XML body into ``Job`` instances."""
-        if not xml_text:
+    def _parse_html(self, html: str) -> list[Job]:
+        """Parse the Python.org jobs listing page."""
+        if not html:
             return []
 
         try:
-            root = ET.fromstring(xml_text)
-        except ET.ParseError as exc:
-            logger.warning(
-                "Python.org Jobs source '{}' could not parse feed XML: {}",
-                self.name,
-                exc,
-            )
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:  # noqa: BLE001
             return []
 
         discovered_at = utc_now_iso()
         jobs: list[Job] = []
         seen: set[str] = set()
 
-        for item in root.iter("item"):
-            title = _child_text(item, "title")
-            url = _child_text(item, "link")
-            if not url or url in seen:
+        # Python.org lists jobs as <li> inside <ol class="job-list">
+        # or as <article> elements with class "job"
+        job_items = soup.select("ol.job-listing > li") or soup.select("li.job")
+        if not job_items:
+            job_items = soup.find_all("li", class_=re.compile("job"))
+
+        for item in job_items:
+            # Title + URL from the heading link
+            link = item.find("a", href=True)
+            if not link:
                 continue
-            company = (
-                _child_text(item, "creator")
-                or _child_text(item, "author")
-                or ""
-            )
-            description = html_to_text(_child_text(item, "description"))
-            published_at = _child_text(item, "pubDate") or None
-            work_type = _child_text(item, "job-type") or None
+            title = clean_text(link.get_text())
+            url = link["href"]
+            if not url.startswith("http"):
+                url = f"https://www.python.org{url}"
+            if url in seen:
+                continue
+            seen.add(url)
+
+            # Company — often in a <span> or text after the title
+            company = ""
+            company_el = item.find("span", class_=re.compile("company|organization"))
+            if company_el:
+                company = clean_text(company_el.get_text())
+            if not company:
+                # Try text content after title
+                full_text = clean_text(item.get_text())
+                if title and title in full_text:
+                    remainder = full_text.replace(title, "", 1).strip()
+                    if remainder and len(remainder) < 200:
+                        company = remainder.split(",")[0].strip()
+
+            # Location
+            location_el = item.find("span", class_=re.compile("location"))
+            location = clean_text(location_el.get_text()) if location_el else None
+
+            # Posted date
+            time_el = item.find("time")
+            published_at = None
+            if time_el:
+                published_at = time_el.get("datetime") or time_el.get("title")
+
+            # Job type tags
+            work_type = None
+            type_el = item.find("span", class_=re.compile("type|tag"))
+            if type_el:
+                work_type = clean_text(type_el.get_text()) or None
 
             job = make_job(
                 title=title,
                 company=company or "Python.org",
-                location=None,
+                location=location,
                 source=self.name,
                 url=url,
-                description=description,
-                work_type=work_type or None,
+                work_type=work_type,
                 published_at=published_at,
                 discovered_at=discovered_at,
             )
             if job:
-                seen.add(url)
                 jobs.append(job)
 
         return jobs
-
-
-def _child_text(parent: ET.Element, local_name: str) -> str:
-    """Return stripped text of the first child matching a local tag name.
-
-    RSS feeds mix plain tags (``title``, ``link``) with namespaced ones
-    (``dc:creator``). ElementTree expands namespaces into Clark notation
-    (``{http://purl.org/dc/elements/1.1/}creator``), so we match on the
-    local part only — ``local_name == "creator"`` matches both a bare
-    ``<creator>`` and a ``<dc:creator>``. Returns ``""`` when absent.
-    """
-    if parent is None:
-        return ""
-    for child in list(parent):
-        tag = child.tag or ""
-        # Clark notation: "{ns}local" -> compare local part; else plain tag.
-        local = tag.rsplit("}", 1)[-1] if "}" in tag else tag
-        if local == local_name:
-            return clean_text(child.text or "")
-    return ""
 
 
 __all__ = ["PythonJobsSource"]
